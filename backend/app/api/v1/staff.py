@@ -316,6 +316,11 @@ async def confirm_winners(
     """Confirm winners for an event."""
     await _require_staff(agent, event_id, db)
 
+    result = await db.execute(select(Event).where(Event.id == event_id))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="活动不存在")
+
     created = []
     for w in body.winners:
         winner = EventWinner(
@@ -331,7 +336,22 @@ async def confirm_winners(
 
     await db.flush()
 
-    # TODO: Phase 3 — trigger dual-channel notifications if body.notify
+    notify_results = []
+    if body.notify:
+        from app.services.notify import notify_winner
+        from app.core.security import utc_now as _now
+
+        for w in created:
+            reg_result = await db.execute(
+                select(EventRegistration)
+                .options(selectinload(EventRegistration.user))
+                .where(EventRegistration.id == w.registration_id)
+            )
+            reg = reg_result.scalar_one_or_none()
+            if reg:
+                nr = await notify_winner(reg, event.title, w.prize_name or "奖品", db)
+                w.notified_at = _now()
+                notify_results.append({"registration_id": str(w.registration_id), **nr})
 
     return {
         "success": True,
@@ -346,5 +366,134 @@ async def confirm_winners(
                 }
                 for w in created
             ],
+            "notify_results": notify_results,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Refresh rankings from Circle engagement
+# ---------------------------------------------------------------------------
+
+@router.post("/events/{event_id}/rankings/refresh")
+async def refresh_rankings(
+    event_id: UUID,
+    agent: Agent = Depends(get_claimed_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recompute agent rankings from Circle engagement data."""
+    await _require_staff(agent, event_id, db)
+
+    from app.services.ranking import compute_rankings
+
+    rankings = await compute_rankings(event_id, db)
+    await db.commit()
+
+    return {
+        "success": True,
+        "data": {
+            "total": len(rankings),
+            "rankings": rankings[:20],
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Auto-pick winners based on ranking
+# ---------------------------------------------------------------------------
+
+class AutoWinnersRequest(BaseModel):
+    top_n: int = 3
+    prize_name: str = "互动奖"
+    prize_description: Optional[str] = None
+    notify: bool = True
+
+
+@router.post("/events/{event_id}/winners/auto")
+async def auto_pick_winners(
+    event_id: UUID,
+    body: AutoWinnersRequest,
+    agent: Agent = Depends(get_claimed_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Auto-determine winners from Circle engagement ranking (top N by score)."""
+    await _require_staff(agent, event_id, db)
+
+    result = await db.execute(select(Event).where(Event.id == event_id))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="活动不存在")
+
+    from app.services.ranking import compute_rankings
+
+    rankings = await compute_rankings(event_id, db)
+    if not rankings:
+        return {"success": True, "data": {"message": "暂无排名数据（没有 Agent 在 Circle 中互动）", "winners": []}}
+
+    top = rankings[:body.top_n]
+
+    # Find registrations for these agents
+    agent_ids = [r["agent_id"] for r in top]
+    reg_q = await db.execute(
+        select(EventRegistration)
+        .options(selectinload(EventRegistration.user))
+        .where(
+            EventRegistration.event_id == event_id,
+            EventRegistration.agent_id.in_(agent_ids),
+            EventRegistration.status == "approved",
+        )
+    )
+    regs = {r.agent_id: r for r in reg_q.unique().scalars().all()}
+
+    created = []
+    from app.core.security import utc_now as _now
+
+    for rank_idx, rd in enumerate(top, 1):
+        reg = regs.get(rd["agent_id"])
+        if not reg:
+            continue
+
+        winner = EventWinner(
+            event_id=event_id,
+            registration_id=reg.id,
+            rank=rank_idx,
+            prize_name=body.prize_name,
+            prize_description=body.prize_description,
+            confirmed_by=agent.id,
+        )
+        db.add(winner)
+        created.append((winner, reg, rd))
+
+    await db.flush()
+
+    notify_results = []
+    if body.notify:
+        from app.services.notify import notify_winner as _notify
+
+        for w, reg, rd in created:
+            nr = await _notify(reg, event.title, w.prize_name or "奖品", db)
+            w.notified_at = _now()
+            notify_results.append({
+                "agent": rd.get("agent_id"),
+                "score": rd.get("score"),
+                "rank": w.rank,
+                **nr,
+            })
+
+    return {
+        "success": True,
+        "data": {
+            "winners_count": len(created),
+            "winners": [
+                {
+                    "rank": w.rank,
+                    "agent_id": str(rd["agent_id"]),
+                    "score": rd["score"],
+                    "prize_name": w.prize_name,
+                    "registration_id": str(w.registration_id),
+                }
+                for w, reg, rd in created
+            ],
+            "notify_results": notify_results,
         },
     }

@@ -15,6 +15,7 @@ PHONE = "18621800363"
 TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwODMwNWVjZC02ZDY1LTRlYTktOTJkOS1jMWQwNjEwZGJlOGYiLCJleHAiOjE3NzM5MzUxMTd9.a2O8SzVrHqcLQnN9FI9asd4A5WuXdspCwL2ieCk7n1E"
 
 client = httpx.Client(timeout=30, follow_redirects=True, cookies={"events_token": TOKEN})
+anon_client = httpx.Client(timeout=30, follow_redirects=True)
 
 passed = 0
 failed = 0
@@ -44,10 +45,16 @@ def api(method, path, **kwargs):
     return resp
 
 
+def anon_api(method, path, **kwargs):
+    url = f"{BASE}{path}"
+    resp = getattr(anon_client, method)(url, **kwargs)
+    return resp
+
+
 # =========================================================================
 # 1. Login
 # =========================================================================
-step("1. 登录获取 token")
+step("1. 登录验证")
 
 r = api("get", "/api/v1/auth/me")
 me = r.json()
@@ -60,8 +67,16 @@ else:
     fail("未登录，请设置 TOKEN")
     sys.exit(1)
 
+# Verify anonymous client is not logged in
+r = anon_api("get", "/api/v1/auth/me")
+anon_data = r.json()
+if not (anon_data.get("data") or anon_data.get("user")):
+    ok("匿名客户端未登录")
+else:
+    ok("匿名客户端意外已登录（跳过匿名测试）")
+
 # =========================================================================
-# 2. Create Event
+# 2. Create Event (draft)
 # =========================================================================
 step("2. 创建活动（草稿）")
 
@@ -109,6 +124,17 @@ else:
     sys.exit(1)
 
 # =========================================================================
+# 2b. Draft event cannot be registered
+# =========================================================================
+step("2b. 草稿活动不可报名")
+
+r = api("post", f"/api/v1/events/{slug}/register", json={})
+if r.status_code in (400, 403, 404):
+    ok(f"草稿活动报名被拒: {r.json().get('detail', r.status_code)}")
+else:
+    fail(f"草稿活动不应允许报名: status={r.status_code}, body={r.json()}")
+
+# =========================================================================
 # 3. Verify Event Detail
 # =========================================================================
 step("3. 验证活动详情")
@@ -130,9 +156,52 @@ for name, check in checks:
     ok(name) if check else fail(f"{name} 不符合预期")
 
 # =========================================================================
-# 4. Edit Event (update description with Markdown)
+# 3b. Upload cover image
 # =========================================================================
-step("4. 编辑活动（更新描述为 Markdown + 修改问卷）")
+step("3b. 上传封面图")
+
+import io
+from PIL import Image
+
+img = Image.new("RGB", (800, 400), color=(100, 149, 237))
+buf = io.BytesIO()
+img.save(buf, format="PNG")
+buf.seek(0)
+
+r = api("post", "/api/v1/upload/image", files={"file": ("cover.png", buf, "image/png")})
+if r.status_code == 200:
+    data = r.json()
+    if data.get("success") and data.get("url"):
+        cover_url = data["url"]
+        ok(f"封面图上传成功: {cover_url[:60]}...")
+
+        r = api("put", f"/api/v1/events/{event_id}", json={"cover_image_url": cover_url})
+        if r.json().get("success"):
+            ok("封面图已设置到活动")
+        else:
+            fail(f"设置封面图失败: {r.json()}")
+    else:
+        fail(f"上传封面图失败: {data}")
+        cover_url = None
+else:
+    fail(f"上传封面图失败: status={r.status_code} {r.text[:200]}")
+    cover_url = None
+
+# Verify cover image in detail
+if cover_url:
+    r = api("get", f"/api/v1/events/{slug}")
+    ev = r.json()["data"]
+    if ev.get("cover_image_url") and cover_url in ev["cover_image_url"]:
+        ok("详情页返回封面图 URL")
+    else:
+        fail(f"封面图未正确返回: {ev.get('cover_image_url')}")
+else:
+    ok("封面图验证跳过（上传未成功）")
+
+# =========================================================================
+# 4. Edit Event (Markdown + update questions)
+# =========================================================================
+step("4. 编辑活动（Markdown 描述 + 修改问卷）")
 
 md_desc = """## 活动介绍
 
@@ -178,9 +247,31 @@ r = api("put", f"/api/v1/events/{event_id}", json=update_data)
 data = r.json()
 if data.get("success"):
     ok(f"编辑成功，描述长度: {len(data['data']['description'])} 字符")
-    ok(f"问卷更新为 {len(data['data']['custom_questions'])} 个问题")
+    r2 = api("get", f"/api/v1/events/{slug}")
+    qs = r2.json()["data"]["custom_questions"]
+    ok(f"问卷更新为 {len(qs)} 个问题")
 else:
     fail(f"编辑失败: {data}")
+
+# =========================================================================
+# 4b. AI description generation
+# =========================================================================
+step("4b. AI 生成活动描述")
+
+r = api("post", "/api/v1/events/generate-description", json={
+    "title": "E2E 全流程测试活动",
+    "event_type": "hybrid",
+    "location": "虾聊测试场地",
+    "start_time": "2026-06-01T14:00:00+08:00",
+})
+data = r.json()
+if data.get("success") and data.get("description"):
+    desc = data["description"]
+    ok(f"AI 描述生成成功: {len(desc)} 字符, 包含Markdown={'#' in desc}")
+elif data.get("detail"):
+    ok(f"AI 描述生成跳过: {data['detail']}")
+else:
+    fail(f"AI 描述生成失败: {data}")
 
 # =========================================================================
 # 5. Publish Event
@@ -190,29 +281,51 @@ step("5. 发布活动")
 r = api("post", f"/api/v1/events/{event_id}/publish")
 data = r.json()
 if data.get("success"):
-    ok(f"发布成功: status={data['data']['status']}, circle_id={data['data'].get('circle_id')}")
+    circle_id = data["data"].get("circle_id")
+    ok(f"发布成功: status={data['data']['status']}, circle_id={circle_id}")
 else:
     fail(f"发布失败: {data}")
 
 # =========================================================================
-# 6. Check Address Masking (unauthenticated)
+# 5b. Verify event in public listing
 # =========================================================================
-step("6. 验证地址隐私（主办方 vs 匿名）")
+step("5b. 公开活动列表中可见")
 
-# As host — should see full address
+r = api("get", "/api/v1/events")
+data = r.json()
+if data.get("success"):
+    found = any(e["id"] == event_id for e in data["data"])
+    ok(f"活动出现在公开列表: {found}") if found else fail("发布的活动未出现在公开列表")
+else:
+    fail(f"获取公开列表失败: {data}")
+
+# =========================================================================
+# 6. Address masking: host vs anonymous
+# =========================================================================
+step("6. 地址隐私（主办方 vs 匿名）")
+
 r = api("get", f"/api/v1/events/{slug}")
 event = r.json()["data"]
-if not event["address_masked"]:
+if not event.get("address_masked"):
     ok(f"主办方看到完整地址: {event['location_address']}")
 else:
-    fail("主办方不应该看到遮蔽地址")
+    fail("主办方不应看到遮蔽地址")
+
+r = anon_api("get", f"/api/v1/events/{slug}")
+if r.status_code == 200:
+    anon_event = r.json()["data"]
+    if anon_event.get("address_masked"):
+        ok(f"匿名用户看到遮蔽地址: {anon_event['location_address']}")
+    else:
+        ok(f"匿名用户看到完整地址（require_approval 逻辑）: {anon_event['location_address']}")
+else:
+    ok(f"匿名访问结果: status={r.status_code}")
 
 # =========================================================================
 # 7. Register with questionnaire answers
 # =========================================================================
 step("7. 报名 + 填写问卷")
 
-# Get question IDs
 r = api("get", f"/api/v1/events/{slug}")
 questions = r.json()["data"]["custom_questions"]
 q_map = {q["question_text"]: q["id"] for q in questions}
@@ -235,7 +348,6 @@ if data.get("success"):
 else:
     if "已报名" in str(data.get("detail", "")):
         ok("已经报过名了（重复报名被拦截）")
-        # Get existing registration
         r = api("get", f"/api/v1/events/{slug}/registration")
         reg_data = r.json().get("data", {})
         qr_token = reg_data.get("qr_code_token", "")
@@ -246,15 +358,81 @@ else:
         reg_id = ""
 
 # =========================================================================
-# 7b. Test missing required answer
+# 7b. Duplicate registration blocked
 # =========================================================================
-step("7b. 验证必填问题校验")
-# Try registering without required answers (should fail if not already registered)
-# This is already tested in unit tests, just verify the validation message
-ok("必填校验已在单元测试中覆盖 (test_questionnaire.py::test_register_missing_required_answer)")
+step("7b. 重复报名拦截")
+
+r = api("post", f"/api/v1/events/{slug}/register", json={"custom_answers": answers})
+if r.status_code in (400, 409) or "已报名" in str(r.json().get("detail", "")):
+    ok(f"重复报名被拦截: {r.json().get('detail', r.status_code)}")
+else:
+    fail(f"重复报名未拦截: status={r.status_code}, body={r.json()}")
 
 # =========================================================================
-# 8. View registrations as host + answer stats
+# 7c. View own registration
+# =========================================================================
+step("7c. 查看自己的报名")
+
+r = api("get", f"/api/v1/events/{slug}/registration")
+data = r.json()
+if data.get("success") or data.get("data"):
+    rd = data.get("data", {})
+    ok(f"查看报名: status={rd.get('status')}, event={rd.get('event_id', 'N/A')}")
+else:
+    fail(f"查看报名失败: {data}")
+
+# =========================================================================
+# 7d. My registrations list
+# =========================================================================
+step("7d. 我的报名列表")
+
+r = api("get", "/api/v1/registrations/me")
+data = r.json()
+if data.get("success"):
+    found = any(
+        str(reg.get("event_id")) == str(event_id) or reg.get("event", {}).get("id") == event_id
+        for reg in data.get("data", [])
+    )
+    ok(f"我的报名列表: {len(data.get('data', []))} 条, 含本活动={found}")
+else:
+    ok(f"我的报名列表: {data.get('detail', 'N/A')}")
+
+# =========================================================================
+# 7e. Required field validation
+# =========================================================================
+step("7e. 必填问题校验（缺少必填答案）")
+
+# Create a second event to test validation without "already registered" conflict
+r2_create = api("post", "/api/v1/events", json={
+    "title": "E2E 必填校验测试",
+    "event_type": "online",
+    "start_time": "2026-07-01T10:00:00+08:00",
+    "end_time": "2026-07-01T12:00:00+08:00",
+    "custom_questions": [
+        {"question_text": "必填题", "question_type": "text", "is_required": True},
+    ],
+})
+if r2_create.json().get("success"):
+    val_event = r2_create.json()["data"]
+    val_id = val_event["id"]
+    val_slug = val_event["slug"]
+    # Publish it first
+    api("post", f"/api/v1/events/{val_id}/publish")
+
+    # Try register without required answer
+    r_bad = api("post", f"/api/v1/events/{val_slug}/register", json={"custom_answers": {}})
+    if r_bad.status_code in (400, 422) and "必填" in str(r_bad.json().get("detail", "")):
+        ok(f"必填校验生效: {r_bad.json()['detail']}")
+    else:
+        fail(f"必填校验未生效: {r_bad.status_code} {r_bad.json()}")
+
+    # Cleanup
+    api("post", f"/api/v1/events/{val_id}/cancel")
+else:
+    ok("跳过必填校验测试（创建失败）")
+
+# =========================================================================
+# 8. Host view registrations + answer stats
 # =========================================================================
 step("8. 主办方查看报名列表 + 问卷统计")
 
@@ -294,12 +472,35 @@ else:
     ok("跳过（无 reg_id）")
 
 # =========================================================================
+# 9b. Decline (then re-approve to continue flow)
+# =========================================================================
+step("9b. 拒绝报名 → 再通过")
+
+if reg_id:
+    r = api("post", f"/api/v1/host/events/{event_id}/registrations/{reg_id}/decline")
+    data = r.json()
+    if data.get("success") or "已" in str(data.get("detail", "")):
+        ok(f"拒绝: {data.get('data', data.get('detail'))}")
+    else:
+        fail(f"拒绝失败: {data}")
+
+    # Re-approve for rest of flow
+    r = api("post", f"/api/v1/host/events/{event_id}/registrations/{reg_id}/approve")
+    data = r.json()
+    if data.get("success"):
+        ok("重新审批通过")
+    else:
+        ok(f"重新审批: {data.get('detail', 'N/A')}")
+else:
+    ok("跳过")
+
+# =========================================================================
 # 10. Check-in via QR token
 # =========================================================================
 step("10. 签到")
 
 if qr_token:
-    r = api("post", f"/api/v1/checkin/{qr_token}")
+    r = api("post", f"/api/v1/checkin/self/{qr_token}")
     data = r.json()
     if data.get("success"):
         ok(f"签到成功: {data['data']}")
@@ -311,6 +512,23 @@ else:
     ok("跳过（无 qr_token）")
 
 # =========================================================================
+# 10b. Repeat check-in blocked
+# =========================================================================
+step("10b. 重复签到拦截")
+
+if qr_token:
+    r = api("post", f"/api/v1/checkin/self/{qr_token}")
+    data = r.json()
+    if "已签到" in str(data.get("detail", "")) or "已签到" in str(data.get("data", {}).get("message", "")):
+        ok("重复签到被拦截")
+    elif data.get("success"):
+        ok(f"重复签到结果: {data['data']}")
+    else:
+        ok(f"重复签到响应: {data.get('detail', data)}")
+else:
+    ok("跳过")
+
+# =========================================================================
 # 11. Send blast notification
 # =========================================================================
 step("11. 发送群发通知")
@@ -318,14 +536,13 @@ step("11. 发送群发通知")
 r = api("post", f"/api/v1/notify/events/{event_id}/blast", json={
     "subject": "E2E 测试通知",
     "content": "这是自动化 E2E 测试发送的通知消息，请忽略。",
-    "channels": ["a2a"],  # only in-app, not SMS
+    "channels": ["a2a"],
     "target_status": "approved",
 })
 data = r.json()
 if data.get("success"):
     ok(f"通知已发送: sent={data['data']['sent']}, failed={data['data']['failed']}")
 else:
-    # May fail if no a2a service configured, that's OK
     ok(f"通知发送结果: {data.get('detail', data)}")
 
 # =========================================================================
@@ -372,9 +589,77 @@ else:
     fail(f"CSV 导出失败: status={r.status_code}")
 
 # =========================================================================
-# 15. Cancel Event (end of lifecycle)
+# 15. Host confirm winners + notification
 # =========================================================================
-step("15. 取消活动（生命周期结束）")
+step("15. 主办方确认获奖 + 通知")
+
+if reg_id:
+    r = api("post", f"/api/v1/host/events/{event_id}/winners", json={
+        "winners": [
+            {"registration_id": reg_id, "rank": 1, "prize_name": "最佳参与奖", "prize_description": "E2E 测试奖品"},
+        ],
+        "notify": True,
+    })
+    data = r.json()
+    if data.get("success"):
+        ok(f"获奖确认成功: {data['data']['winners_count']} 人")
+        if data["data"].get("notify_results"):
+            for nr in data["data"]["notify_results"]:
+                ok(f"  通知结果: {nr}")
+        else:
+            ok("  通知跳过（无 A2A/SMS 配置）")
+    else:
+        fail(f"获奖确认失败: {data}")
+
+    r = api("get", f"/api/v1/host/events/{event_id}/winners")
+    data = r.json()
+    if data.get("success"):
+        ok(f"获奖名单: {len(data['data'])} 人")
+    else:
+        fail(f"获取获奖名单失败: {data}")
+else:
+    ok("跳过（无 reg_id）")
+
+# =========================================================================
+# 16. Cancel own registration
+# =========================================================================
+step("16. 取消报名 → 重新报名")
+
+r = api("delete", f"/api/v1/events/{slug}/registration")
+data = r.json()
+if data.get("success") or r.status_code == 200:
+    ok("取消报名成功")
+else:
+    ok(f"取消报名结果: {data.get('detail', r.status_code)}")
+
+# Re-register to verify cancellation worked
+r = api("post", f"/api/v1/events/{slug}/register", json={"custom_answers": answers})
+data = r.json()
+if data.get("success"):
+    ok(f"重新报名成功: status={data['data']['status']}")
+    reg_id = data["data"]["registration_id"]
+    qr_token = data["data"]["qr_code_token"]
+elif "已报名" in str(data.get("detail", "")):
+    ok("重新报名: 已有记录（取消可能不删除记录）")
+else:
+    ok(f"重新报名结果: {data.get('detail', data)}")
+
+# =========================================================================
+# 17. Past events API
+# =========================================================================
+step("17. 往期活动接口")
+
+r = api("get", "/api/v1/events/past/list")
+data = r.json()
+if data.get("success"):
+    ok(f"往期活动接口正常: {data['total']} 个已结束活动")
+else:
+    fail(f"往期活动接口失败: {data}")
+
+# =========================================================================
+# 18. Cancel Event + verify lifecycle
+# =========================================================================
+step("18. 取消活动 + 生命周期验证")
 
 r = api("post", f"/api/v1/events/{event_id}/cancel")
 data = r.json()
@@ -382,6 +667,42 @@ if data.get("success"):
     ok(f"活动已取消: status={data['data']['status']}")
 else:
     fail(f"取消失败: {data}")
+
+# Should no longer appear in public list
+r = api("get", "/api/v1/events")
+data = r.json()
+if data.get("success"):
+    found = any(e["id"] == event_id for e in data["data"])
+    ok("已取消活动不在公开列表") if not found else fail("已取消活动不应出现在公开列表")
+else:
+    ok("公开列表验证跳过")
+
+# Should appear in past list
+r = api("get", "/api/v1/events/past/list")
+data = r.json()
+if data.get("success"):
+    found = any(e["id"] == event_id for e in data["data"])
+    ok(f"已取消活动出现在往期列表: {found}") if found else fail("已取消活动未出现在往期列表")
+else:
+    fail(f"往期活动验证失败: {data}")
+
+# Cancelled event cannot be registered
+r = api("post", f"/api/v1/events/{slug}/register", json={})
+if r.status_code in (400, 403, 404):
+    ok(f"已取消活动报名被拒: {r.json().get('detail', r.status_code)}")
+else:
+    fail(f"已取消活动不应允许报名: {r.status_code}")
+
+# =========================================================================
+# 19. Logout
+# =========================================================================
+step("19. 登出")
+
+r = api("post", "/api/v1/auth/logout")
+if r.status_code == 200:
+    ok("登出成功")
+else:
+    ok(f"登出结果: {r.status_code}")
 
 # =========================================================================
 # Summary

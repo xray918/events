@@ -16,7 +16,7 @@ from app.core.deps import get_current_user
 from app.core.security import utc_now
 from app.db import get_db
 from app.models.clawdchat import Agent, User
-from app.models.event import Event, EventRegistration, EventStaff
+from app.models.event import Event, EventRegistration, EventStaff, EventWinner
 
 router = APIRouter()
 
@@ -311,7 +311,7 @@ async def export_registrations_csv(
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=registrations-{event.slug}.csv"},
+        headers={"Content-Disposition": f"attachment; filename=registrations-{event.id}.csv"},
     )
 
 
@@ -417,3 +417,115 @@ async def filter_registrations_by_answer(
         "total": len(filtered),
         "data": [_reg_to_dict(r) for r in filtered],
     }
+
+
+# ---------------------------------------------------------------------------
+# Winners management (host-facing)
+# ---------------------------------------------------------------------------
+
+class HostWinnerCreate(BaseModel):
+    registration_id: UUID
+    rank: Optional[int] = None
+    prize_name: Optional[str] = None
+    prize_description: Optional[str] = None
+
+
+class HostWinnersRequest(BaseModel):
+    winners: list[HostWinnerCreate]
+    notify: bool = True
+
+
+@router.post("/events/{event_id}/winners")
+async def host_confirm_winners(
+    event_id: UUID,
+    body: HostWinnersRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Host confirms winners and optionally sends notifications."""
+    event = await _require_host(user, event_id, db)
+
+    created = []
+    for w in body.winners:
+        winner = EventWinner(
+            event_id=event_id,
+            registration_id=w.registration_id,
+            rank=w.rank,
+            prize_name=w.prize_name,
+            prize_description=w.prize_description,
+            confirmed_by=user.id,
+        )
+        db.add(winner)
+        created.append(winner)
+
+    await db.flush()
+
+    notify_results = []
+    if body.notify:
+        from app.services.notify import notify_winner
+
+        for w in created:
+            reg_result = await db.execute(
+                select(EventRegistration)
+                .options(selectinload(EventRegistration.user))
+                .where(EventRegistration.id == w.registration_id)
+            )
+            reg = reg_result.scalar_one_or_none()
+            if reg:
+                nr = await notify_winner(reg, event.title, w.prize_name or "奖品", db)
+                w.notified_at = utc_now()
+                notify_results.append({"registration_id": str(w.registration_id), **nr})
+
+    await db.commit()
+
+    return {
+        "success": True,
+        "data": {
+            "winners_count": len(created),
+            "notify_results": notify_results,
+        },
+    }
+
+
+@router.get("/events/{event_id}/winners")
+async def list_winners(
+    event_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List confirmed winners for an event."""
+    await _require_host(user, event_id, db)
+
+    q = (
+        select(EventWinner)
+        .where(EventWinner.event_id == event_id)
+        .order_by(EventWinner.rank.asc().nullslast())
+    )
+    result = await db.execute(q)
+    winners = result.scalars().all()
+
+    winner_data = []
+    for w in winners:
+        reg_result = await db.execute(
+            select(EventRegistration)
+            .options(selectinload(EventRegistration.user), selectinload(EventRegistration.agent))
+            .where(EventRegistration.id == w.registration_id)
+        )
+        reg = reg_result.scalar_one_or_none()
+
+        winner_data.append({
+            "id": str(w.id),
+            "rank": w.rank,
+            "prize_name": w.prize_name,
+            "prize_description": w.prize_description,
+            "notified_at": w.notified_at.isoformat() if w.notified_at else None,
+            "user": {
+                "id": str(reg.user.id) if reg and reg.user else None,
+                "nickname": reg.user.nickname if reg and reg.user else None,
+            } if reg else None,
+            "agent": {
+                "name": reg.agent.name if reg and reg.agent else None,
+            } if reg and reg.agent else None,
+        })
+
+    return {"success": True, "data": winner_data}

@@ -19,6 +19,8 @@ from app.db.redis import close_redis
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+
     print(f"🎪 Starting {settings.app_name}...")
     print(f"📍 Environment: {settings.app_env}")
     print(f"📚 API Docs: http://localhost:{settings.port}/docs")
@@ -31,7 +33,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"⚠️ Database init failed: {e}")
 
+    from app.services.scheduler import scheduler_loop
+    scheduler_task = asyncio.create_task(scheduler_loop())
+    print("⏰ Background scheduler started")
+
     yield
+
+    scheduler_task.cancel()
     await close_redis()
     print(f"👋 Shutting down {settings.app_name}...")
 

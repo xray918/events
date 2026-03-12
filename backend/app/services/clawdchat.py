@@ -110,10 +110,16 @@ async def publish_event_to_clawdchat(
         circle_desc = f"活动圈子 — {event_title}"
 
     circle = await create_circle(circle_name, circle_desc, api_key=api_key)
+
     if not circle:
-        return None
+        # Name conflict — retry with slug suffix to guarantee uniqueness
+        unique_name = f"🎉 {event_title} ({event_slug[-8:]})"
+        circle = await create_circle(unique_name, circle_desc, api_key=api_key)
+        if not circle:
+            return None
 
     circle_id = circle.get("id")
+    actual_circle_name = circle.get("name", circle_name)
 
     event_url = f"{settings.frontend_url}/e/{event_slug}"
     post_content = (
@@ -124,7 +130,7 @@ async def publish_event_to_clawdchat(
     )
 
     await create_post(
-        circle_name=circle_name,
+        circle_name=actual_circle_name,
         title=f"📢 活动发布：{event_title}",
         content=post_content,
         url=event_url,

@@ -42,21 +42,29 @@ async def notify_winner(
     event_title: str,
     prize_name: str,
     db: AsyncSession,
-):
-    """Notify a winner via both channels."""
-    if reg.phone:
-        await send_sms(
+) -> dict:
+    """Notify a winner via both channels. Returns send results."""
+    results = {}
+
+    if reg.phone and settings.sms_winner_template_code:
+        sms_result = await send_sms(
             phone=reg.phone,
-            template_code=settings.sms_template_code,
+            template_code=settings.sms_winner_template_code,
             template_params={"event": event_title[:20], "prize": prize_name[:10]},
         )
+        results["sms"] = sms_result
+    elif reg.phone:
+        results["sms"] = {"success": False, "error": "Winner SMS template not configured"}
 
     if reg.user_id:
-        await _notify_user_agents_via_a2a(
+        a2a_result = await _notify_user_agents_via_a2a(
             user_id=reg.user_id,
-            message=f"恭喜！你在活动「{event_title}」中获奖：{prize_name}！请联系主办方领奖。",
+            message=f"🏆 恭喜！你在活动「{event_title}」中获奖：{prize_name}！请联系主办方领奖。",
             db=db,
         )
+        results["a2a"] = a2a_result
+
+    return results
 
 
 async def send_blast_to_registration(

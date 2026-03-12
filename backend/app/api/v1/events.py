@@ -201,6 +201,39 @@ async def list_events(
 
 
 # ---------------------------------------------------------------------------
+# Past events (completed / cancelled)
+# ---------------------------------------------------------------------------
+
+@router.get("/past/list")
+async def list_past_events(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Browse past (completed/cancelled) events."""
+    where_clauses = [
+        Event.visibility == "public",
+        Event.status.in_(["completed", "cancelled"]),
+    ]
+
+    count_q = select(func.count()).select_from(Event).where(*where_clauses)
+    total = (await db.execute(count_q)).scalar() or 0
+
+    query = (
+        select(Event)
+        .options(selectinload(Event.host), selectinload(Event.registrations))
+        .where(*where_clauses)
+        .order_by(Event.end_time.desc().nullslast())
+        .offset(skip)
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    events = result.unique().scalars().all()
+
+    return {"success": True, "data": [_build_event_response(e) for e in events], "total": total}
+
+
+# ---------------------------------------------------------------------------
 # Get single event by slug (public)
 # ---------------------------------------------------------------------------
 
