@@ -232,12 +232,6 @@ async def bind_phone(
     if not await verify_code(phone, data.code.strip()):
         raise HTTPException(status_code=400, detail="验证码错误或已过期")
 
-    # 检查手机号是否被其他用户占用
-    result = await db.execute(select(User).where(User.phone == phone))
-    existing = result.scalar_one_or_none()
-    if existing and str(existing.id) != str(user.id):
-        raise HTTPException(status_code=400, detail="该手机号已被其他账号绑定")
-
     user.phone = phone
     db.add(user)
     await db.commit()
