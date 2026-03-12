@@ -45,6 +45,16 @@ export default async function HomePage() {
           </p>
         </div>
       )}
+
+      {/* Past events link */}
+      <div className="mt-12 text-center">
+        <a
+          href="/past"
+          className="text-sm text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors"
+        >
+          查看往期活动 →
+        </a>
+      </div>
     </div>
   );
 }
