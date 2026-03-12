@@ -191,6 +191,60 @@ async def get_me(user: User = Depends(get_current_user)):
     }
 
 
+@router.post("/me/phone/send-code")
+async def send_bind_phone_code(
+    data: PhoneSendCodeRequest,
+    user: User = Depends(get_current_user),
+):
+    """已登录用户绑定手机号 — 发送验证码"""
+    phone = data.phone.strip()
+    if not PHONE_RE.match(phone):
+        raise HTTPException(status_code=400, detail="请输入有效的手机号")
+
+    if not await can_send(phone):
+        raise HTTPException(status_code=429, detail="发送过于频繁，请60秒后重试")
+
+    code = generate_code()
+    await store_code(phone, code)
+
+    result = await send_verification_code(phone, code)
+    if result.get("mock"):
+        logger.info(f"[MOCK] 绑定验证码 {phone}: {code}")
+        return {"success": True, "message": "验证码已发送（测试模式）"}
+
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=f"短信发送失败: {result.get('error', '未知错误')}")
+
+    return {"success": True, "message": "验证码已发送"}
+
+
+@router.post("/me/phone/bind")
+async def bind_phone(
+    data: PhoneLoginRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """已登录用户绑定手机号 — 验证码校验并绑定"""
+    phone = data.phone.strip()
+    if not PHONE_RE.match(phone):
+        raise HTTPException(status_code=400, detail="请输入有效的手机号")
+
+    if not await verify_code(phone, data.code.strip()):
+        raise HTTPException(status_code=400, detail="验证码错误或已过期")
+
+    # 检查手机号是否被其他用户占用
+    result = await db.execute(select(User).where(User.phone == phone))
+    existing = result.scalar_one_or_none()
+    if existing and str(existing.id) != str(user.id):
+        raise HTTPException(status_code=400, detail="该手机号已被其他账号绑定")
+
+    user.phone = phone
+    db.add(user)
+    await db.commit()
+
+    return {"success": True, "message": "手机号绑定成功"}
+
+
 @router.post("/logout")
 async def logout(response: Response):
     """退出登录"""

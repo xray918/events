@@ -26,6 +26,17 @@ export function RegisterButton({ slug, questions }: Props) {
   const [formError, setFormError] = useState("");
   const [result, setResult] = useState<{ success: boolean; message?: string } | null>(null);
 
+  // 手机号绑定弹窗状态
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
+  const [phoneInput, setPhoneInput] = useState("");
+  const [phoneCode, setPhoneCode] = useState("");
+  const [phoneStep, setPhoneStep] = useState<"input" | "verify">("input");
+  const [phoneLoading, setPhoneLoading] = useState(false);
+  const [phoneError, setPhoneError] = useState("");
+  const [countdown, setCountdown] = useState(0);
+  // 绑定后继续报名所需的自定义答案
+  const [pendingAnswers, setPendingAnswers] = useState<Record<string, string | string[]> | null>(null);
+
   const hasQuestions = questions && questions.length > 0;
 
   function handleClick() {
@@ -77,7 +88,10 @@ export function RegisterButton({ slug, questions }: Props) {
       const data = await res.json();
 
       if (data.need_phone) {
-        setResult({ success: false, message: "请先补充手机号" });
+        // 保存当前报名答案，绑定手机号后自动继续
+        setPendingAnswers(customAnswers);
+        setShowPhoneModal(true);
+        setShowForm(false);
       } else if (data.success) {
         setResult({ success: true, message: data.data?.message || "报名成功！" });
         setShowForm(false);
@@ -89,6 +103,85 @@ export function RegisterButton({ slug, questions }: Props) {
     } finally {
       setLoading(false);
     }
+  }
+
+  function startCountdown() {
+    setCountdown(60);
+    const timer = setInterval(() => {
+      setCountdown((c) => {
+        if (c <= 1) { clearInterval(timer); return 0; }
+        return c - 1;
+      });
+    }, 1000);
+  }
+
+  async function sendPhoneCode() {
+    setPhoneError("");
+    if (!/^1[3-9]\d{9}$/.test(phoneInput)) {
+      setPhoneError("请输入有效的手机号");
+      return;
+    }
+    setPhoneLoading(true);
+    try {
+      const res = await fetch(`${API}/api/v1/auth/me/phone/send-code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ phone: phoneInput }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPhoneStep("verify");
+        startCountdown();
+      } else {
+        setPhoneError(data.detail || "发送失败，请重试");
+      }
+    } catch {
+      setPhoneError("网络错误");
+    } finally {
+      setPhoneLoading(false);
+    }
+  }
+
+  async function bindPhone() {
+    setPhoneError("");
+    if (!phoneCode.trim()) {
+      setPhoneError("请输入验证码");
+      return;
+    }
+    setPhoneLoading(true);
+    try {
+      const res = await fetch(`${API}/api/v1/auth/me/phone/bind`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ phone: phoneInput, code: phoneCode }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setShowPhoneModal(false);
+        // 绑定成功后自动继续报名
+        if (pendingAnswers !== null) {
+          doRegister(pendingAnswers);
+          setPendingAnswers(null);
+        }
+      } else {
+        setPhoneError(data.detail || "绑定失败，请重试");
+      }
+    } catch {
+      setPhoneError("网络错误");
+    } finally {
+      setPhoneLoading(false);
+    }
+  }
+
+  function closePhoneModal() {
+    setShowPhoneModal(false);
+    setPhoneInput("");
+    setPhoneCode("");
+    setPhoneStep("input");
+    setPhoneError("");
+    setPendingAnswers(null);
   }
 
   if (result?.success) {
@@ -109,6 +202,77 @@ export function RegisterButton({ slug, questions }: Props) {
           <p className="text-xs text-destructive">{result.message}</p>
         )}
       </div>
+
+      {/* 手机号绑定弹窗 */}
+      {showPhoneModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={closePhoneModal}
+        >
+          <div
+            className="relative w-full max-w-sm bg-background rounded-xl shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b">
+              <h3 className="font-semibold">补充手机号</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">报名需要手机号以接收活动通知</p>
+            </div>
+
+            <div className="px-5 py-4 space-y-3">
+              <div>
+                <label className="text-sm font-medium">手机号</label>
+                <Input
+                  className="mt-1.5"
+                  type="tel"
+                  placeholder="请输入手机号"
+                  value={phoneInput}
+                  onChange={(e) => setPhoneInput(e.target.value)}
+                  disabled={phoneStep === "verify"}
+                />
+              </div>
+
+              {phoneStep === "verify" && (
+                <div>
+                  <label className="text-sm font-medium">验证码</label>
+                  <div className="flex gap-2 mt-1.5">
+                    <Input
+                      placeholder="请输入验证码"
+                      value={phoneCode}
+                      onChange={(e) => setPhoneCode(e.target.value)}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={sendPhoneCode}
+                      disabled={countdown > 0 || phoneLoading}
+                    >
+                      {countdown > 0 ? `${countdown}s` : "重新发送"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {phoneError && <p className="text-xs text-destructive">{phoneError}</p>}
+            </div>
+
+            <div className="px-5 py-3 border-t flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={closePhoneModal}>
+                取消
+              </Button>
+              {phoneStep === "input" ? (
+                <Button className="flex-1" onClick={sendPhoneCode} disabled={phoneLoading}>
+                  {phoneLoading ? "发送中..." : "获取验证码"}
+                </Button>
+              ) : (
+                <Button className="flex-1" onClick={bindPhone} disabled={phoneLoading}>
+                  {phoneLoading ? "绑定中..." : "确认绑定"}
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {showForm && hasQuestions && (
         <div
