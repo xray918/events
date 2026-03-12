@@ -12,7 +12,10 @@ from sqlalchemy.orm import selectinload
 
 from app.db import get_db
 from app.models.clawdchat import Agent, User
-from app.models.event import Event, EventCustomQuestion, EventRegistration, EventStaff
+from app.models.event import (
+    Event, EventCustomQuestion, EventRegistration, EventStaff,
+    EventWinner, EventRanking, EventBlast, EventBlastLog,
+)
 from app.schemas.event import EventCreate, EventUpdate, EventResponse, EventListResponse, RegisterRequest
 from app.core.deps import get_current_user, get_optional_agent, get_optional_user
 from app.core.security import generate_qr_token, utc_now
@@ -499,6 +502,44 @@ async def cancel_event(
 
     event.status = "cancelled"
     return {"success": True, "data": {"id": str(event.id), "status": event.status}}
+
+
+@router.delete("/{event_id}")
+async def delete_event(
+    event_id: str,
+    agent: Optional[Agent] = Depends(get_optional_agent),
+    user: Optional[User] = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently delete a cancelled/draft event and all related data."""
+    if not user and not agent:
+        raise HTTPException(status_code=401, detail="请先登录或使用 Agent API Key 认证")
+
+    result = await db.execute(select(Event).where(Event.id == event_id))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="活动不存在")
+
+    caller_id = user.id if user else agent.owner_id
+    if event.host_id != caller_id:
+        raise HTTPException(status_code=403, detail="无权操作此活动")
+    if event.status not in ("draft", "cancelled"):
+        raise HTTPException(status_code=400, detail="只能删除草稿或已取消的活动")
+
+    from sqlalchemy import delete
+    # Delete in FK-dependency order: logs → blasts → winners → rankings → registrations → questions → staff → event
+    blast_ids = select(EventBlast.id).where(EventBlast.event_id == event.id)
+    reg_ids = select(EventRegistration.id).where(EventRegistration.event_id == event.id)
+    await db.execute(delete(EventBlastLog).where(EventBlastLog.blast_id.in_(blast_ids)))
+    await db.execute(delete(EventBlast).where(EventBlast.event_id == event.id))
+    await db.execute(delete(EventWinner).where(EventWinner.registration_id.in_(reg_ids)))
+    await db.execute(delete(EventRanking).where(EventRanking.event_id == event.id))
+    await db.execute(delete(EventRegistration).where(EventRegistration.event_id == event.id))
+    await db.execute(delete(EventCustomQuestion).where(EventCustomQuestion.event_id == event.id))
+    await db.execute(delete(EventStaff).where(EventStaff.event_id == event.id))
+    await db.delete(event)
+
+    return {"success": True, "message": "活动已彻底删除"}
 
 
 # ---------------------------------------------------------------------------
