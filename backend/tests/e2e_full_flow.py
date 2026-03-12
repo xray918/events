@@ -184,7 +184,7 @@ if r.status_code == 200:
         fail(f"上传封面图失败: {data}")
         cover_url = None
 else:
-    ok(f"上传封面图跳过（服务端 OSS 权限待配置）: status={r.status_code}")
+    fail(f"上传封面图失败: status={r.status_code} {r.text[:200]}")
     cover_url = None
 
 # Verify cover image in detail

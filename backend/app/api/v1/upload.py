@@ -1,9 +1,7 @@
-"""Image upload API."""
+"""Image upload API — proxies to ClawdChat file API."""
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 
-from app.db import get_db
 from app.models.clawdchat import User
 from app.core.config import settings
 from app.core.deps import get_current_user
@@ -20,8 +18,8 @@ async def upload_image_endpoint(
     user: User = Depends(get_current_user),
 ):
     """Upload an image (cover, description embed). Returns {url}."""
-    if not settings.alibaba_cloud_access_key_id:
-        raise HTTPException(status_code=503, detail="OSS 未配置")
+    if not settings.events_bot_api_key:
+        raise HTTPException(status_code=503, detail="图床未配置（缺少 EventsBot API Key）")
 
     content_type = file.content_type or ""
     if content_type not in ALLOWED_IMAGE_TYPES:
@@ -37,7 +35,10 @@ async def upload_image_endpoint(
             detail=f"图片大小超过 {settings.image_max_size_mb}MB 限制",
         )
 
-    file_ext = ALLOWED_IMAGE_TYPES[content_type]
-    url = upload_image(contents, file_ext, str(user.id))
+    filename = file.filename or "image.png"
+    try:
+        url = await upload_image(contents, filename, content_type)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     return {"success": True, "url": url}

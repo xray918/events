@@ -60,10 +60,7 @@ class Settings(BaseSettings):
     sms_template_code: str = ""
     sms_winner_template_code: str = ""
 
-    # Alibaba Cloud OSS
-    oss_endpoint: str = "oss-cn-hongkong.aliyuncs.com"
-    oss_bucket_name: str = "clawdchat"
-    oss_prefix: str = "events/"
+    # Image upload (via ClawdChat file API)
     image_max_size_mb: int = 5
 
     # OpenRouter LLM (for AI description generation)

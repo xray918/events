@@ -1,10 +1,7 @@
-"""Alibaba Cloud OSS upload service for Events (covers, description images)."""
+"""Image upload via ClawdChat file API (proxy to ClawdChat's OSS)."""
 
-import uuid
 import logging
-from datetime import datetime
-
-import oss2
+import httpx
 
 from app.core.config import settings
 
@@ -18,25 +15,27 @@ ALLOWED_IMAGE_TYPES = {
 }
 
 
-def _get_bucket() -> oss2.Bucket:
-    auth = oss2.Auth(
-        settings.alibaba_cloud_access_key_id,
-        settings.alibaba_cloud_access_key_secret,
-    )
-    return oss2.Bucket(auth, settings.oss_endpoint, settings.oss_bucket_name)
+async def upload_image(file_content: bytes, filename: str, content_type: str) -> str:
+    """Upload image via ClawdChat file API, return public URL."""
+    api_key = settings.events_bot_api_key
+    if not api_key:
+        raise RuntimeError("EVENTS_BOT_API_KEY 未配置，无法上传图片")
 
+    base = settings.clawdchat_api_base.rstrip("/")
+    url = f"{base}/files/upload"
 
-def _build_url(key: str) -> str:
-    return f"https://{settings.oss_bucket_name}.{settings.oss_endpoint}/{key}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            files={"file": (filename, file_content, content_type)},
+        )
 
+    if resp.status_code != 200:
+        logger.error("ClawdChat file upload failed: %s %s", resp.status_code, resp.text[:300])
+        raise RuntimeError(f"虾聊图床上传失败: {resp.status_code} {resp.text[:200]}")
 
-def upload_image(file_content: bytes, file_ext: str, owner_id: str) -> str:
-    """Upload an image to OSS, return public URL."""
-    bucket = _get_bucket()
-    ts = datetime.now().strftime("%Y%m%d%H%M%S")
-    uid = uuid.uuid4().hex[:8]
-    key = f"{settings.oss_prefix}images/{owner_id}/{ts}_{uid}{file_ext}"
-    bucket.put_object(key, file_content)
-    url = _build_url(key)
-    logger.info(f"Image uploaded: {key}")
-    return url
+    data = resp.json()
+    image_url = data.get("url", "")
+    logger.info("Image uploaded via ClawdChat: %s", image_url)
+    return image_url
