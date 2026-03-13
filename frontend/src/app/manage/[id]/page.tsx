@@ -1,13 +1,29 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { useRequireAuth } from "@/hooks/use-require-auth";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
+
+interface EventInfo {
+  id: string;
+  title: string;
+  slug: string;
+  status: string;
+  start_time: string;
+  end_time: string | null;
+  location_name: string | null;
+  event_type: string;
+  registration_count: number;
+  capacity: number | null;
+}
 
 interface Registration {
   id: string;
@@ -30,10 +46,35 @@ interface AnswerStat {
   total_answers: number;
 }
 
+interface StaffMember {
+  id: string;
+  agent_name: string | null;
+  agent_display_name: string | null;
+  role: string;
+}
+
+interface WinnerInfo {
+  id: string;
+  rank: number | null;
+  prize_name: string | null;
+  user: { id: string | null; nickname: string | null } | null;
+  agent: { name: string | null } | null;
+}
+
+const statusLabels: Record<string, string> = {
+  draft: "草稿",
+  published: "已发布",
+  cancelled: "已取消",
+  completed: "已结束",
+};
+
 export default function ManagePage() {
   const { authenticated } = useRequireAuth();
   const params = useParams();
+  const router = useRouter();
   const eventId = params.id as string;
+
+  const [event, setEvent] = useState<EventInfo | null>(null);
   const [regs, setRegs] = useState<Registration[]>([]);
   const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(true);
@@ -42,14 +83,51 @@ export default function ManagePage() {
   const [showStats, setShowStats] = useState(false);
   const [answerFilter, setAnswerFilter] = useState<{ questionId: string; value: string } | null>(null);
 
+  const [actionLoading, setActionLoading] = useState("");
+  const [confirmDialog, setConfirmDialog] = useState<{ type: string; regId?: string } | null>(null);
+
+  // Blast notification state
+  const [showBlast, setShowBlast] = useState(false);
+  const [blastSubject, setBlastSubject] = useState("");
+  const [blastContent, setBlastContent] = useState("");
+  const [blastChannels, setBlastChannels] = useState<string[]>(["sms", "a2a"]);
+  const [blastLoading, setBlastLoading] = useState(false);
+  const [blastResult, setBlastResult] = useState<string | null>(null);
+
+  // Feedback state
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [feedbackData, setFeedbackData] = useState<{ avg_rating: number; count: number; items: { id: string; rating: number; comment: string | null; user: { nickname: string | null }; created_at: string | null }[] }>({ avg_rating: 0, count: 0, items: [] });
+
+  // Co-host state
+  const [showCohosts, setShowCohosts] = useState(false);
+  const [cohosts, setCohosts] = useState<{ id: string; nickname: string | null; avatar_url: string | null }[]>([]);
+  const [newCohostPhone, setNewCohostPhone] = useState("");
+  const [cohostLoading, setCohostLoading] = useState(false);
+
+  // Staff state
+  const [showStaff, setShowStaff] = useState(false);
+  const [staffList, setStaffList] = useState<StaffMember[]>([]);
+  const [newStaffName, setNewStaffName] = useState("");
+  const [staffLoading, setStaffLoading] = useState(false);
+
+  // Winners state
+  const [showWinners, setShowWinners] = useState(false);
+  const [winners, setWinners] = useState<WinnerInfo[]>([]);
+
+  async function loadEvent() {
+    try {
+      const res = await fetch(`${API}/api/v1/events/${eventId}`, { credentials: "include" });
+      const data = await res.json();
+      if (data.success && data.data) setEvent(data.data);
+    } catch { /* ignore */ }
+  }
+
   async function loadData() {
     try {
       const regRes = await fetch(`${API}/api/v1/host/events/${eventId}/registrations?limit=200`, { credentials: "include" });
       const allRegs = await regRes.json();
       if (allRegs.data) setRegs(allRegs.data);
-    } catch {
-      // ignore
-    } finally {
+    } catch { /* ignore */ } finally {
       setLoading(false);
     }
   }
@@ -59,9 +137,90 @@ export default function ManagePage() {
       const res = await fetch(`${API}/api/v1/host/events/${eventId}/answer-stats`, { credentials: "include" });
       const data = await res.json();
       if (data.data) setAnswerStats(data.data);
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
+  }
+
+  async function loadFeedback() {
+    try {
+      if (!event?.slug) return;
+      const res = await fetch(`${API}/api/v1/events/${event.slug}/feedback`);
+      const data = await res.json();
+      if (data.success && data.data) setFeedbackData(data.data);
+    } catch { /* ignore */ }
+  }
+
+  async function loadCohosts() {
+    try {
+      const res = await fetch(`${API}/api/v1/host/events/${eventId}/cohosts`, { credentials: "include" });
+      const data = await res.json();
+      if (data.data) setCohosts(data.data);
+    } catch { /* ignore */ }
+  }
+
+  async function handleAddCohost() {
+    if (!newCohostPhone.trim()) return;
+    setCohostLoading(true);
+    try {
+      const res = await fetch(`${API}/api/v1/host/events/${eventId}/cohosts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ phone: newCohostPhone.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setNewCohostPhone("");
+        loadCohosts();
+      }
+    } finally { setCohostLoading(false); }
+  }
+
+  async function handleRemoveCohost(cohostId: string) {
+    await fetch(`${API}/api/v1/host/events/${eventId}/cohosts/${cohostId}`, {
+      method: "DELETE", credentials: "include",
+    });
+    loadCohosts();
+  }
+
+  async function loadStaff() {
+    try {
+      const res = await fetch(`${API}/api/v1/host/events/${eventId}/staff`, { credentials: "include" });
+      const data = await res.json();
+      if (data.data) setStaffList(data.data);
+    } catch { /* ignore */ }
+  }
+
+  async function loadWinners() {
+    try {
+      const res = await fetch(`${API}/api/v1/host/events/${eventId}/winners`, { credentials: "include" });
+      const data = await res.json();
+      if (data.data) setWinners(data.data);
+    } catch { /* ignore */ }
+  }
+
+  async function handleAddStaff() {
+    if (!newStaffName.trim()) return;
+    setStaffLoading(true);
+    try {
+      const res = await fetch(`${API}/api/v1/host/events/${eventId}/staff`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ agent_name: newStaffName.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setNewStaffName("");
+        loadStaff();
+      }
+    } finally { setStaffLoading(false); }
+  }
+
+  async function handleRemoveStaff(staffId: string) {
+    await fetch(`${API}/api/v1/host/events/${eventId}/staff/${staffId}`, {
+      method: "DELETE", credentials: "include",
+    });
+    loadStaff();
   }
 
   async function filterByAnswer(questionId: string, value: string) {
@@ -73,9 +232,7 @@ export default function ManagePage() {
       );
       const data = await res.json();
       if (data.data) setRegs(data.data);
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
   function clearAnswerFilter() {
@@ -85,45 +242,132 @@ export default function ManagePage() {
 
   useEffect(() => {
     if (authenticated) {
+      loadEvent();
       loadData();
       loadStats();
+      loadCohosts();
+      loadStaff();
+      loadWinners();
     }
   }, [eventId, authenticated]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  async function handlePublish() {
+    setActionLoading("publish");
+    try {
+      await fetch(`${API}/api/v1/events/${eventId}/publish`, { method: "POST", credentials: "include" });
+      await loadEvent();
+    } finally { setActionLoading(""); }
+  }
+
+  async function handleCancel() {
+    setActionLoading("cancel");
+    try {
+      await fetch(`${API}/api/v1/events/${eventId}/cancel`, { method: "POST", credentials: "include" });
+      await loadEvent();
+    } finally {
+      setActionLoading("");
+      setConfirmDialog(null);
+    }
+  }
+
+  async function handleDelete() {
+    setActionLoading("delete");
+    try {
+      const res = await fetch(`${API}/api/v1/events/${eventId}`, { method: "DELETE", credentials: "include" });
+      const data = await res.json();
+      if (data.success) {
+        router.push("/my");
+        return;
+      }
+    } finally {
+      setActionLoading("");
+      setConfirmDialog(null);
+    }
+  }
+
+  async function handleClone() {
+    setActionLoading("clone");
+    try {
+      const res = await fetch(`${API}/api/v1/events/${eventId}/clone`, { method: "POST", credentials: "include" });
+      const data = await res.json();
+      if (data.success && data.data) {
+        router.push(`/edit/${data.data.id}`);
+      }
+    } finally { setActionLoading(""); }
+  }
+
   async function handleApprove(regId: string) {
     await fetch(`${API}/api/v1/host/events/${eventId}/registrations/${regId}/approve`, {
-      method: "POST",
-      credentials: "include",
+      method: "POST", credentials: "include",
     });
     loadData();
   }
 
   async function handleDecline(regId: string) {
+    setConfirmDialog(null);
     await fetch(`${API}/api/v1/host/events/${eventId}/registrations/${regId}/decline`, {
-      method: "POST",
-      credentials: "include",
+      method: "POST", credentials: "include",
     });
     loadData();
   }
 
   async function handleBatchApprove() {
     await fetch(`${API}/api/v1/host/events/${eventId}/registrations/batch-approve`, {
-      method: "POST",
-      credentials: "include",
+      method: "POST", credentials: "include",
     });
     loadData();
   }
 
-  async function handlePublish() {
-    await fetch(`${API}/api/v1/events/${eventId}/publish`, {
-      method: "POST",
+  async function handleExport() {
+    const res = await fetch(`${API}/api/v1/host/events/${eventId}/registrations/export`, {
       credentials: "include",
     });
-    loadData();
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `registrations-${eventId}.csv`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+  }
+
+  async function handleBlast() {
+    if (!blastSubject.trim() || !blastContent.trim()) return;
+    setBlastLoading(true);
+    setBlastResult(null);
+    try {
+      const res = await fetch(`${API}/api/v1/notify/events/${eventId}/blast`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          subject: blastSubject,
+          content: blastContent,
+          channels: blastChannels,
+          target_status: "approved",
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const d = data.data;
+        setBlastResult(`发送完成：${d.sent}/${d.total_recipients} 人成功`);
+        setBlastSubject("");
+        setBlastContent("");
+      } else {
+        setBlastResult(data.detail || "发送失败");
+      }
+    } catch {
+      setBlastResult("网络错误");
+    } finally {
+      setBlastLoading(false);
+    }
   }
 
   const filteredRegs = filter === "all" ? regs : regs.filter((r) => r.status === filter);
   const pendingCount = regs.filter((r) => r.status === "pending").length;
+  const approvedCount = regs.filter((r) => r.status === "approved").length;
+  const checkedInCount = regs.filter((r) => r.checked_in_at).length;
 
   if (loading) {
     return <div className="mx-auto max-w-4xl px-4 py-10"><p className="text-muted-foreground">加载中...</p></div>;
@@ -131,22 +375,81 @@ export default function ManagePage() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-10">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">活动管理</h1>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={handlePublish}>发布活动</Button>
-          <a href={`${API}/api/v1/host/events/${eventId}/registrations/export`} target="_blank" rel="noreferrer">
-            <Button variant="outline">导出 CSV</Button>
-          </a>
+      {/* Event Header */}
+      {event && (
+        <div className="mb-6">
+          <div className="flex items-center gap-3 mb-2">
+            <Badge variant={event.status === "published" ? "default" : event.status === "draft" ? "secondary" : "outline"}>
+              {statusLabels[event.status] || event.status}
+            </Badge>
+            <span className="text-xs text-muted-foreground">
+              {new Date(event.start_time).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })}
+            </span>
+          </div>
+          <h1 className="text-2xl font-bold tracking-tight">{event.title}</h1>
+          {event.location_name && (
+            <p className="text-sm text-muted-foreground mt-1">{event.location_name}</p>
+          )}
         </div>
+      )}
+
+      {/* Action Buttons */}
+      <div className="flex flex-wrap items-center gap-2 mb-6">
+        {event?.status === "draft" && (
+          <Button onClick={handlePublish} disabled={actionLoading === "publish"}>
+            {actionLoading === "publish" ? "发布中..." : "发布活动"}
+          </Button>
+        )}
+        {event && (
+          <Link href={`/e/${event.slug}`}>
+            <Button variant="outline">查看活动页</Button>
+          </Link>
+        )}
+        {event && (event.status === "draft" || event.status === "published") && (
+          <Link href={`/edit/${event.id}`}>
+            <Button variant="outline">编辑活动</Button>
+          </Link>
+        )}
+        <Button variant="outline" onClick={handleExport}>导出 CSV</Button>
+        <Button
+          variant="outline"
+          onClick={handleClone}
+          disabled={actionLoading === "clone"}
+        >
+          {actionLoading === "clone" ? "克隆中..." : "克隆活动"}
+        </Button>
+        {event?.status === "published" && (
+          <Button
+            variant="outline"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setConfirmDialog({ type: "cancel" })}
+          >
+            取消活动
+          </Button>
+        )}
+        {event && (event.status === "draft" || event.status === "cancelled") && (
+          <Button
+            variant="outline"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setConfirmDialog({ type: "delete" })}
+          >
+            删除活动
+          </Button>
+        )}
       </div>
 
-      {/* Stats */}
-      <div className="mt-6 grid grid-cols-3 gap-4">
+      {/* Stats Cards */}
+      <div className="grid grid-cols-4 gap-4 mb-6">
         <Card>
           <CardContent className="p-4 text-center">
             <p className="text-2xl font-bold">{regs.length}</p>
             <p className="text-xs text-muted-foreground">总报名</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4 text-center">
+            <p className="text-2xl font-bold">{approvedCount}</p>
+            <p className="text-xs text-muted-foreground">已通过</p>
           </CardContent>
         </Card>
         <Card>
@@ -157,15 +460,263 @@ export default function ManagePage() {
         </Card>
         <Card>
           <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold">{regs.filter((r) => r.checked_in_at).length}</p>
+            <p className="text-2xl font-bold">{checkedInCount}</p>
             <p className="text-xs text-muted-foreground">已签到</p>
           </CardContent>
         </Card>
       </div>
 
+      {/* Blast Notification */}
+      <div className="mb-6">
+        <button
+          onClick={() => setShowBlast(!showBlast)}
+          className="text-sm font-medium text-primary hover:underline"
+        >
+          {showBlast ? "收起" : "展开"}群发通知
+        </button>
+        {showBlast && (
+          <Card className="mt-3">
+            <CardContent className="p-4 space-y-3">
+              <p className="text-sm text-muted-foreground">向所有已通过的报名者发送通知</p>
+              <Input
+                placeholder="通知主题"
+                value={blastSubject}
+                onChange={(e) => setBlastSubject(e.target.value)}
+              />
+              <Textarea
+                placeholder="通知内容..."
+                rows={3}
+                value={blastContent}
+                onChange={(e) => setBlastContent(e.target.value)}
+              />
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer text-sm">
+                  <input
+                    type="checkbox"
+                    checked={blastChannels.includes("sms")}
+                    onChange={(e) => {
+                      setBlastChannels(e.target.checked
+                        ? [...blastChannels, "sms"]
+                        : blastChannels.filter((c) => c !== "sms"));
+                    }}
+                    className="h-3.5 w-3.5 rounded border-input"
+                  />
+                  短信
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer text-sm">
+                  <input
+                    type="checkbox"
+                    checked={blastChannels.includes("a2a")}
+                    onChange={(e) => {
+                      setBlastChannels(e.target.checked
+                        ? [...blastChannels, "a2a"]
+                        : blastChannels.filter((c) => c !== "a2a"));
+                    }}
+                    className="h-3.5 w-3.5 rounded border-input"
+                  />
+                  Agent 消息
+                </label>
+              </div>
+              <div className="flex items-center gap-3">
+                <Button
+                  size="sm"
+                  onClick={handleBlast}
+                  disabled={blastLoading || !blastSubject.trim() || !blastContent.trim()}
+                >
+                  {blastLoading ? "发送中..." : "发送通知"}
+                </Button>
+                {blastResult && (
+                  <p className="text-xs text-muted-foreground">{blastResult}</p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* Co-Host Management */}
+      <div className="mb-6">
+        <button
+          onClick={() => setShowCohosts(!showCohosts)}
+          className="text-sm font-medium text-primary hover:underline"
+        >
+          {showCohosts ? "收起" : "展开"}联合主办方
+          {cohosts.length > 0 && ` (${cohosts.length})`}
+        </button>
+        {showCohosts && (
+          <Card className="mt-3">
+            <CardContent className="p-4 space-y-3">
+              <div className="flex gap-2">
+                <Input
+                  placeholder="输入联合主办方手机号"
+                  value={newCohostPhone}
+                  onChange={(e) => setNewCohostPhone(e.target.value)}
+                  className="flex-1"
+                />
+                <Button size="sm" onClick={handleAddCohost} disabled={cohostLoading || !newCohostPhone.trim()}>
+                  {cohostLoading ? "添加中..." : "添加"}
+                </Button>
+              </div>
+              {cohosts.length === 0 ? (
+                <p className="text-sm text-muted-foreground">暂无联合主办方</p>
+              ) : (
+                <div className="space-y-2">
+                  {cohosts.map((ch) => (
+                    <div key={ch.id} className="flex items-center justify-between rounded-lg bg-muted/50 p-2.5">
+                      <div className="flex items-center gap-2">
+                        {ch.avatar_url ? (
+                          <img src={ch.avatar_url} alt="" className="h-6 w-6 rounded-full" />
+                        ) : (
+                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs">
+                            {(ch.nickname || "?")[0]}
+                          </span>
+                        )}
+                        <span className="text-sm font-medium">{ch.nickname}</span>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-xs text-destructive hover:text-destructive"
+                        onClick={() => handleRemoveCohost(ch.id)}
+                      >
+                        移除
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* Staff Management */}
+      <div className="mb-6">
+        <button
+          onClick={() => setShowStaff(!showStaff)}
+          className="text-sm font-medium text-primary hover:underline"
+        >
+          {showStaff ? "收起" : "展开"} Staff Agent 管理
+          {staffList.length > 0 && ` (${staffList.length})`}
+        </button>
+        {showStaff && (
+          <Card className="mt-3">
+            <CardContent className="p-4 space-y-3">
+              <div className="flex gap-2">
+                <Input
+                  placeholder="输入 Agent 名称（如 my-agent）"
+                  value={newStaffName}
+                  onChange={(e) => setNewStaffName(e.target.value)}
+                  className="flex-1"
+                />
+                <Button size="sm" onClick={handleAddStaff} disabled={staffLoading || !newStaffName.trim()}>
+                  {staffLoading ? "添加中..." : "添加 Staff"}
+                </Button>
+              </div>
+              {staffList.length === 0 ? (
+                <p className="text-sm text-muted-foreground">暂无 Staff Agent</p>
+              ) : (
+                <div className="space-y-2">
+                  {staffList.map((s) => (
+                    <div key={s.id} className="flex items-center justify-between rounded-lg bg-muted/50 p-2.5">
+                      <div>
+                        <p className="text-sm font-medium">{s.agent_display_name || s.agent_name}</p>
+                        <p className="text-xs text-muted-foreground">角色: {s.role}</p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-xs text-destructive hover:text-destructive"
+                        onClick={() => handleRemoveStaff(s.id)}
+                      >
+                        移除
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* Winners */}
+      <div className="mb-6">
+        <button
+          onClick={() => setShowWinners(!showWinners)}
+          className="text-sm font-medium text-primary hover:underline"
+        >
+          {showWinners ? "收起" : "展开"}获奖者管理
+          {winners.length > 0 && ` (${winners.length})`}
+        </button>
+        {showWinners && (
+          <Card className="mt-3">
+            <CardContent className="p-4">
+              {winners.length === 0 ? (
+                <p className="text-sm text-muted-foreground">暂无获奖者。可通过 Staff Agent API 评选获奖者。</p>
+              ) : (
+                <div className="space-y-2">
+                  {winners.map((w) => (
+                    <div key={w.id} className="flex items-center justify-between rounded-lg bg-muted/50 p-2.5">
+                      <div className="flex items-center gap-3">
+                        {w.rank && (
+                          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                            #{w.rank}
+                          </span>
+                        )}
+                        <div>
+                          <p className="text-sm font-medium">{w.user?.nickname || w.agent?.name || "未知"}</p>
+                          {w.prize_name && <p className="text-xs text-muted-foreground">{w.prize_name}</p>}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* Post-event Feedback */}
+      {event && event.status === "completed" && (
+        <div className="mb-6">
+          <button
+            onClick={() => { setShowFeedback(!showFeedback); if (!showFeedback) loadFeedback(); }}
+            className="text-sm font-medium text-primary hover:underline"
+          >
+            {showFeedback ? "收起" : "展开"}活动评价
+            {feedbackData.count > 0 && ` (${feedbackData.count} 条, 均分 ${feedbackData.avg_rating})`}
+          </button>
+          {showFeedback && (
+            <Card className="mt-3">
+              <CardContent className="p-4">
+                {feedbackData.items.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">暂无评价</p>
+                ) : (
+                  <div className="space-y-2">
+                    {feedbackData.items.map((fb) => (
+                      <div key={fb.id} className="rounded-lg bg-muted/50 p-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium">{fb.user?.nickname || "匿名"}</span>
+                          <span className="text-xs text-amber-500">
+                            {"★".repeat(fb.rating)}{"☆".repeat(5 - fb.rating)}
+                          </span>
+                        </div>
+                        {fb.comment && <p className="mt-1 text-sm text-muted-foreground">{fb.comment}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
       {/* Answer Statistics */}
       {answerStats.length > 0 && (
-        <div className="mt-4">
+        <div className="mb-4">
           <button
             onClick={() => setShowStats(!showStats)}
             className="text-sm font-medium text-primary hover:underline"
@@ -224,7 +775,7 @@ export default function ManagePage() {
 
       {/* Batch actions */}
       {pendingCount > 0 && (
-        <div className="mt-4 flex items-center gap-2 rounded-lg bg-muted/50 p-3">
+        <div className="mb-4 flex items-center gap-2 rounded-lg bg-muted/50 p-3">
           <p className="text-sm">{pendingCount} 个报名待审批</p>
           <Button size="sm" onClick={handleBatchApprove}>全部通过</Button>
         </div>
@@ -232,7 +783,7 @@ export default function ManagePage() {
 
       {/* Answer filter indicator */}
       {answerFilter && (
-        <div className="mt-3 flex items-center gap-2 rounded-lg bg-blue-50 dark:bg-blue-950/30 p-2.5 text-sm">
+        <div className="mb-3 flex items-center gap-2 rounded-lg bg-blue-50 dark:bg-blue-950/30 p-2.5 text-sm">
           <span>
             筛选中：<span className="font-medium">{answerFilter.value}</span>
           </span>
@@ -242,8 +793,8 @@ export default function ManagePage() {
         </div>
       )}
 
-      {/* Registrations */}
-      <div className="mt-6">
+      {/* Registrations List */}
+      <div>
         <div className="flex gap-2 mb-4">
           {["all", "pending", "approved", "declined", "waitlisted"].map((s) => (
             <button
@@ -303,7 +854,13 @@ export default function ManagePage() {
                       {reg.status === "pending" && (
                         <>
                           <Button size="sm" onClick={() => handleApprove(reg.id)}>通过</Button>
-                          <Button size="sm" variant="outline" onClick={() => handleDecline(reg.id)}>拒绝</Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setConfirmDialog({ type: "decline", regId: reg.id })}
+                          >
+                            拒绝
+                          </Button>
                         </>
                       )}
                     </div>
@@ -330,6 +887,49 @@ export default function ManagePage() {
           )}
         </div>
       </div>
+
+      {/* Confirm Dialog */}
+      {confirmDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setConfirmDialog(null)}
+        >
+          <div
+            className="w-full max-w-sm bg-background rounded-xl shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4">
+              <h3 className="font-semibold">
+                {confirmDialog.type === "cancel" && "确认取消活动？"}
+                {confirmDialog.type === "delete" && "确认删除活动？"}
+                {confirmDialog.type === "decline" && "确认拒绝此报名？"}
+              </h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                {confirmDialog.type === "cancel" && "取消后参与者将收到通知，此操作不可撤销。"}
+                {confirmDialog.type === "delete" && "删除后所有报名、问卷数据将被永久清除。"}
+                {confirmDialog.type === "decline" && "拒绝后该用户将无法签到。"}
+              </p>
+            </div>
+            <div className="px-5 py-3 border-t flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setConfirmDialog(null)}>
+                返回
+              </Button>
+              <Button
+                variant="destructive"
+                className="flex-1"
+                disabled={!!actionLoading}
+                onClick={() => {
+                  if (confirmDialog.type === "cancel") handleCancel();
+                  else if (confirmDialog.type === "delete") handleDelete();
+                  else if (confirmDialog.type === "decline" && confirmDialog.regId) handleDecline(confirmDialog.regId);
+                }}
+              >
+                {actionLoading ? "处理中..." : "确认"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

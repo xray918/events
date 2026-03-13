@@ -37,6 +37,7 @@ export interface EventItem {
   status: string;
   theme: Record<string, unknown> | null;
   host: { id: string; nickname: string; avatar_url: string | null } | null;
+  cohosts: Array<{ id: string; nickname: string; avatar_url: string | null }> | null;
   circle_id: string | null;
   custom_questions: Array<{
     id: string;
@@ -46,6 +47,7 @@ export interface EventItem {
     is_required: boolean;
   }> | null;
   registration_count: number | null;
+  attendees_preview: Array<{ nickname: string; avatar_url: string | null }> | null;
   created_at: string;
   updated_at: string;
 }

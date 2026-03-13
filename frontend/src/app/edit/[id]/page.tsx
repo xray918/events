@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useRequireAuth } from "@/hooks/use-require-auth";
 import { ImageUpload } from "@/components/image-upload";
 import { QuestionConfigurator, QuestionDraft } from "@/components/question-configurator";
+import { ThemePicker } from "@/components/theme-picker";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
@@ -19,8 +20,10 @@ export default function EditEventPage() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
   const [error, setError] = useState("");
   const [slug, setSlug] = useState("");
+  const [themePreset, setThemePreset] = useState("");
   const [customQuestions, setCustomQuestions] = useState<QuestionDraft[]>([]);
   const [form, setForm] = useState({
     title: "",
@@ -53,6 +56,7 @@ export default function EditEventPage() {
         if (!resp.success || !resp.data) return;
         const e = resp.data;
         setSlug(e.slug);
+        if (e.theme?.preset) setThemePreset(e.theme.preset);
 
         const startDt = e.start_time ? new Date(e.start_time) : null;
         const endDt = e.end_time ? new Date(e.end_time) : null;
@@ -99,6 +103,39 @@ export default function EditEventPage() {
     return <div className="mx-auto max-w-2xl px-4 py-10"><p className="text-muted-foreground">加载中...</p></div>;
   }
 
+  async function handleAIGenerate() {
+    if (!form.title.trim()) {
+      setError("请先填写活动名称");
+      return;
+    }
+    setAiLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`${API}/api/v1/events/generate-description`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          title: form.title,
+          event_type: form.event_type,
+          location: form.location_name || undefined,
+          start_time: form.start_date ? `${form.start_date} ${form.start_time}` : undefined,
+          existing_description: form.description || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        update("description", data.description);
+      } else {
+        setError(data.detail || "AI 生成失败");
+      }
+    } catch {
+      setError("AI 生成失败，请重试");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -134,6 +171,7 @@ export default function EditEventPage() {
             : null,
           require_approval: form.require_approval,
           notify_on_register: form.notify_on_register,
+          theme: themePreset ? { preset: themePreset } : {},
           custom_questions: filteredQuestions.map((q) => ({
             question_text: q.question_text,
             question_type: q.question_type,
@@ -163,7 +201,13 @@ export default function EditEventPage() {
       <form onSubmit={handleSubmit} className="mt-8 space-y-6">
         <ImageUpload
           value={form.cover_image_url}
-          onChange={(url) => update("cover_image_url", url)}
+          onChange={(url) => { update("cover_image_url", url); if (url) setThemePreset(""); }}
+        />
+
+        <ThemePicker
+          value={themePreset}
+          onChange={(id) => { setThemePreset(id); if (id) update("cover_image_url", ""); }}
+          disabled={!!form.cover_image_url}
         />
 
         <div>
@@ -178,7 +222,19 @@ export default function EditEventPage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium">活动描述</label>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium">活动描述</label>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleAIGenerate}
+              disabled={aiLoading}
+              className="text-xs"
+            >
+              {aiLoading ? "AI 生成中..." : "✨ AI 生成"}
+            </Button>
+          </div>
           <Textarea
             value={form.description}
             onChange={(e) => update("description", e.target.value)}
@@ -186,6 +242,9 @@ export default function EditEventPage() {
             rows={8}
             className="mt-1.5 font-mono text-sm"
           />
+          <p className="mt-1 text-xs text-muted-foreground">
+            支持 Markdown 格式：**加粗**、- 列表、![图片](url) 等
+          </p>
         </div>
 
         <div>

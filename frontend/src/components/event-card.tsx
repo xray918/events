@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { EventItem } from "@/lib/api";
+import { getCoverStyle } from "@/lib/themes";
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
@@ -23,34 +24,14 @@ const typeLabels: Record<string, string> = {
   hybrid: "混合",
 };
 
-const defaultCovers = [
-  "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-  "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)",
-  "linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)",
-  "linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)",
-  "linear-gradient(135deg, #fa709a 0%, #fee140 100%)",
-  "linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)",
-];
-
-function getDefaultCover(id: string): string {
-  const idx = parseInt(id.replace(/-/g, "").slice(0, 8), 16) % defaultCovers.length;
-  return defaultCovers[idx];
-}
-
 export function EventCard({ event }: { event: EventItem }) {
-  const hasCover = !!event.cover_image_url;
-
   return (
     <Link href={`/e/${event.slug}`}>
       <Card className="group overflow-hidden border-0 shadow-sm hover:shadow-lg transition-all duration-300 cursor-pointer">
         {/* Cover */}
         <div
           className="relative h-40 w-full"
-          style={
-            hasCover
-              ? { backgroundImage: `url(${event.cover_image_url})`, backgroundSize: "cover", backgroundPosition: "center" }
-              : { background: getDefaultCover(event.id) }
-          }
+          style={getCoverStyle(event)}
         >
           <div className="absolute inset-0 bg-black/10 group-hover:bg-black/5 transition-colors" />
           <div className="absolute top-3 left-3">

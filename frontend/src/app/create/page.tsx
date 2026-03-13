@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useRequireAuth } from "@/hooks/use-require-auth";
 import { ImageUpload } from "@/components/image-upload";
 import { QuestionConfigurator, QuestionDraft } from "@/components/question-configurator";
+import { ThemePicker } from "@/components/theme-picker";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
@@ -18,6 +19,7 @@ export default function CreateEventPage() {
   const [aiLoading, setAiLoading] = useState(false);
   const [error, setError] = useState("");
   const [customQuestions, setCustomQuestions] = useState<QuestionDraft[]>([]);
+  const [themePreset, setThemePreset] = useState("");
   const [form, setForm] = useState({
     title: "",
     description: "",
@@ -117,6 +119,7 @@ export default function CreateEventPage() {
             : null,
           require_approval: form.require_approval,
           notify_on_register: form.notify_on_register,
+          theme: themePreset ? { preset: themePreset } : {},
           custom_questions: customQuestions.filter((q) => q.question_text.trim()).length > 0
             ? customQuestions
                 .filter((q) => q.question_text.trim())
@@ -151,7 +154,14 @@ export default function CreateEventPage() {
         {/* Cover Image */}
         <ImageUpload
           value={form.cover_image_url}
-          onChange={(url) => update("cover_image_url", url)}
+          onChange={(url) => { update("cover_image_url", url); if (url) setThemePreset(""); }}
+        />
+
+        {/* Theme Picker */}
+        <ThemePicker
+          value={themePreset}
+          onChange={(id) => { setThemePreset(id); if (id) update("cover_image_url", ""); }}
+          disabled={!!form.cover_image_url}
         />
 
         {/* Title */}

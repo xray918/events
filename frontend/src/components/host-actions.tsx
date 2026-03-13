@@ -23,7 +23,8 @@ export function HostActions({ eventId, eventStatus, hostId }: Props) {
     fetch(`${API}/api/v1/auth/me`, { credentials: "include" })
       .then((r) => r.json())
       .then((data) => {
-        if (data.user?.id === hostId) setIsHost(true);
+        const userId = data.data?.id;
+        if (userId === hostId) setIsHost(true);
       })
       .catch(() => {});
   }, [hostId]);

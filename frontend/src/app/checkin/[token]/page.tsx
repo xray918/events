@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
@@ -23,6 +24,8 @@ export default function CheckinPage() {
   const [qrUrl, setQrUrl] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [selfCheckinLoading, setSelfCheckinLoading] = useState(false);
+  const [selfCheckinDone, setSelfCheckinDone] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -44,11 +47,33 @@ export default function CheckinPage() {
     load();
   }, [token]);
 
+  async function handleSelfCheckin() {
+    setSelfCheckinLoading(true);
+    try {
+      const res = await fetch(`${API}/api/v1/checkin/self/${token}`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSelfCheckinDone(true);
+        if (info) {
+          setInfo({ ...info, already_checked_in: true, checked_in_at: new Date().toISOString() });
+        }
+      } else {
+        setError(data.detail || "签到失败");
+      }
+    } catch {
+      setError("网络错误");
+    } finally {
+      setSelfCheckinLoading(false);
+    }
+  }
+
   if (loading) {
     return <div className="mx-auto max-w-md px-4 py-20 text-center"><p className="text-muted-foreground">加载中...</p></div>;
   }
 
-  if (error) {
+  if (error && !info) {
     return (
       <div className="mx-auto max-w-md px-4 py-20 text-center">
         <p className="text-destructive">{error}</p>
@@ -64,16 +89,16 @@ export default function CheckinPage() {
         <CardContent className="p-6 text-center space-y-4">
           <h1 className="text-xl font-bold">{info.event_title || "活动签到"}</h1>
 
-          {info.already_checked_in ? (
+          {info.already_checked_in || selfCheckinDone ? (
             <div className="space-y-2">
               <Badge variant="default" className="text-base px-4 py-1">已签到</Badge>
               <p className="text-sm text-muted-foreground">
-                签到时间: {info.checked_in_at ? new Date(info.checked_in_at).toLocaleString("zh-CN") : ""}
+                签到时间: {info.checked_in_at ? new Date(info.checked_in_at).toLocaleString("zh-CN") : "刚刚"}
               </p>
             </div>
           ) : info.status === "approved" ? (
             <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">请出示此二维码给工作人员扫描</p>
+              <p className="text-sm text-muted-foreground">请出示此二维码给工作人员扫描，或自助签到</p>
               {qrUrl && (
                 <div className="flex justify-center">
                   <img
@@ -87,6 +112,15 @@ export default function CheckinPage() {
                 <p className="text-xs text-muted-foreground">参会者</p>
                 <p className="font-medium">{info.user_nickname || "—"}</p>
               </div>
+              <Button
+                onClick={handleSelfCheckin}
+                disabled={selfCheckinLoading}
+                className="w-full"
+                size="lg"
+              >
+                {selfCheckinLoading ? "签到中..." : "自助签到"}
+              </Button>
+              {error && <p className="text-xs text-destructive">{error}</p>}
             </div>
           ) : (
             <div className="space-y-2">

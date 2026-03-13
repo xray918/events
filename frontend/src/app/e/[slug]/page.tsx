@@ -6,6 +6,8 @@ import { RegisterButton } from "@/components/register-button";
 import { EventDescription } from "@/components/event-description";
 import { SharePosterButton } from "@/components/share-poster-button";
 import { HostActions } from "@/components/host-actions";
+import { EventFeedback } from "@/components/event-feedback";
+import { getCoverStyle, getThemeForEvent } from "@/lib/themes";
 
 async function getEvent(slug: string): Promise<EventItem | null> {
   try {
@@ -40,20 +42,6 @@ const typeLabels: Record<string, string> = {
   hybrid: "混合活动",
 };
 
-const defaultCovers = [
-  "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-  "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)",
-  "linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)",
-  "linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)",
-  "linear-gradient(135deg, #fa709a 0%, #fee140 100%)",
-  "linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)",
-];
-
-function getDefaultCover(id: string): string {
-  const idx = parseInt(id.replace(/-/g, "").slice(0, 8), 16) % defaultCovers.length;
-  return defaultCovers[idx];
-}
-
 export default async function EventDetailPage({
   params,
 }: {
@@ -63,19 +51,32 @@ export default async function EventDetailPage({
   if (!event) return notFound();
 
   const hasCover = !!event.cover_image_url;
+  const theme = getThemeForEvent(event);
+  const coverStyle = getCoverStyle(event);
+  const titleColor = hasCover ? "text-white" : theme.textColor === "white" ? "text-white" : "text-gray-900";
+  const badgeBg = hasCover || theme.textColor === "white" ? "bg-white/20 text-white border-white/30" : "bg-black/10 text-gray-800 border-black/10";
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8">
-      {/* Cover Image */}
+      {/* Cover */}
       <div
         className="relative h-56 w-full rounded-2xl overflow-hidden sm:h-72"
-        style={
-          hasCover
-            ? { backgroundImage: `url(${event.cover_image_url})`, backgroundSize: "cover", backgroundPosition: "center" }
-            : { background: getDefaultCover(event.id) }
-        }
+        style={coverStyle}
       >
         <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
+        {!hasCover && (
+          <div className="absolute bottom-0 left-0 right-0 p-6">
+            <div className="flex items-center gap-2 mb-2">
+              <Badge className={`${badgeBg} backdrop-blur-sm text-xs`}>
+                {typeLabels[event.event_type] || event.event_type}
+              </Badge>
+              {event.require_approval && (
+                <Badge className={`${badgeBg} backdrop-blur-sm text-xs`}>需审批</Badge>
+              )}
+            </div>
+            <h1 className={`text-2xl font-bold drop-shadow sm:text-3xl ${titleColor}`}>{event.title}</h1>
+          </div>
+        )}
       </div>
 
       {/* Content */}
@@ -87,18 +88,20 @@ export default async function EventDetailPage({
           hostId={event.host?.id || ""}
         />
 
-        {/* Title & Meta */}
-        <div>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Badge variant="outline" className="text-xs">
-              {typeLabels[event.event_type] || event.event_type}
-            </Badge>
-            {event.require_approval && (
-              <Badge variant="outline" className="text-xs">需审批</Badge>
-            )}
+        {/* Title & Meta — 有封面时显示在图片下方 */}
+        {hasCover && (
+          <div>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Badge variant="outline" className="text-xs">
+                {typeLabels[event.event_type] || event.event_type}
+              </Badge>
+              {event.require_approval && (
+                <Badge variant="outline" className="text-xs">需审批</Badge>
+              )}
+            </div>
+            <h1 className="mt-2 text-3xl font-bold tracking-tight">{event.title}</h1>
           </div>
-          <h1 className="mt-2 text-3xl font-bold tracking-tight">{event.title}</h1>
-        </div>
+        )}
 
         {/* Date & Location Card */}
         <div className="rounded-xl border bg-card p-5 space-y-3">
@@ -157,7 +160,7 @@ export default async function EventDetailPage({
         </div>
 
         {/* Registration + Share */}
-        <div className="rounded-xl border bg-card p-5">
+        <div className="rounded-xl border bg-card p-5 space-y-3">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground">
@@ -167,24 +170,57 @@ export default async function EventDetailPage({
             </div>
             <div className="flex items-center gap-2">
               <SharePosterButton slug={event.slug} title={event.title} />
-              <RegisterButton slug={event.slug} questions={event.custom_questions} />
+              <RegisterButton
+                slug={event.slug}
+                questions={event.custom_questions}
+                eventStatus={event.status}
+                registrationDeadline={event.registration_deadline}
+                capacity={event.capacity}
+                registrationCount={event.registration_count}
+              />
             </div>
           </div>
-        </div>
 
-        {/* Host */}
-        {event.host && (
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-muted-foreground">主办</span>
-            <div className="flex items-center gap-2">
-              {event.host.avatar_url ? (
-                <img src={event.host.avatar_url} alt="" className="h-6 w-6 rounded-full" />
-              ) : (
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs">
-                  {(event.host.nickname || "?")[0]}
+          {/* Attendees preview */}
+          {event.attendees_preview && event.attendees_preview.length > 0 && (
+            <div className="flex items-center gap-2 pt-1">
+              <div className="flex -space-x-2">
+                {event.attendees_preview.slice(0, 8).map((a: { nickname: string; avatar_url: string | null }, i: number) => (
+                  a.avatar_url ? (
+                    <img key={i} src={a.avatar_url} alt="" className="h-7 w-7 rounded-full border-2 border-background" title={a.nickname} />
+                  ) : (
+                    <span key={i} className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-background bg-muted text-[10px]" title={a.nickname}>
+                      {(a.nickname || "?")[0]}
+                    </span>
+                  )
+                ))}
+              </div>
+              {(event.registration_count || 0) > 8 && (
+                <span className="text-xs text-muted-foreground">
+                  +{(event.registration_count || 0) - 8} 人
                 </span>
               )}
-              <span className="text-sm font-medium">{event.host.nickname}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Host & Co-Hosts */}
+        {event.host && (
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-sm text-muted-foreground">主办</span>
+            <div className="flex items-center gap-3 flex-wrap">
+              {[event.host, ...(event.cohosts || [])].map((h: { id: string; nickname: string; avatar_url: string | null }, i: number) => (
+                <div key={h.id || i} className="flex items-center gap-2">
+                  {h.avatar_url ? (
+                    <img src={h.avatar_url} alt="" className="h-6 w-6 rounded-full" />
+                  ) : (
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs">
+                      {(h.nickname || "?")[0]}
+                    </span>
+                  )}
+                  <span className="text-sm font-medium">{h.nickname}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -197,6 +233,11 @@ export default async function EventDetailPage({
               <EventDescription content={event.description} />
             </div>
           </div>
+        )}
+
+        {/* Post-event feedback (only for completed events) */}
+        {event.status === "completed" && (
+          <EventFeedback slug={event.slug} />
         )}
 
         {/* Custom Questions Preview */}

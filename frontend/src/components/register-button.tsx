@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import Link from "next/link";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
@@ -14,19 +16,34 @@ interface CustomQuestion {
   is_required: boolean;
 }
 
+interface RegistrationInfo {
+  id: string;
+  status: string;
+  qr_code_token: string;
+  registered_via: string;
+  registered_at: string;
+  checked_in_at: string | null;
+}
+
 interface Props {
   slug: string;
   questions?: CustomQuestion[] | null;
+  eventStatus?: string;
+  registrationDeadline?: string | null;
+  capacity?: number | null;
+  registrationCount?: number | null;
 }
 
-export function RegisterButton({ slug, questions }: Props) {
+export function RegisterButton({ slug, questions, eventStatus, registrationDeadline, capacity, registrationCount }: Props) {
   const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const [formError, setFormError] = useState("");
   const [result, setResult] = useState<{ success: boolean; message?: string } | null>(null);
+  const [existingReg, setExistingReg] = useState<RegistrationInfo | null>(null);
+  const [cancelLoading, setCancelLoading] = useState(false);
 
-  // 手机号绑定弹窗状态
   const [showPhoneModal, setShowPhoneModal] = useState(false);
   const [phoneInput, setPhoneInput] = useState("");
   const [phoneCode, setPhoneCode] = useState("");
@@ -34,10 +51,123 @@ export function RegisterButton({ slug, questions }: Props) {
   const [phoneLoading, setPhoneLoading] = useState(false);
   const [phoneError, setPhoneError] = useState("");
   const [countdown, setCountdown] = useState(0);
-  // 绑定后继续报名所需的自定义答案
   const [pendingAnswers, setPendingAnswers] = useState<Record<string, string | string[]> | null>(null);
 
   const hasQuestions = questions && questions.length > 0;
+
+  useEffect(() => {
+    fetch(`${API}/api/v1/events/${slug}/registration`, { credentials: "include" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.registered && data.data) {
+          setExistingReg(data.data);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setChecking(false));
+  }, [slug]);
+
+  const isDeadlinePassed = registrationDeadline
+    ? new Date() > new Date(registrationDeadline)
+    : false;
+
+  const isFull = capacity && registrationCount != null
+    ? registrationCount >= capacity
+    : false;
+
+  const isNotPublished = eventStatus && eventStatus !== "published";
+
+  if (checking) {
+    return <div className="h-10 w-24 animate-pulse rounded-lg bg-muted" />;
+  }
+
+  if (existingReg) {
+    const statusLabels: Record<string, string> = {
+      approved: "已通过",
+      pending: "待审批",
+      waitlisted: "候补中",
+      declined: "已拒绝",
+      cancelled: "已取消",
+    };
+    const label = statusLabels[existingReg.status] || existingReg.status;
+
+    if (existingReg.status === "cancelled") {
+      return (
+        <div className="flex flex-col items-end gap-1">
+          <Badge variant="outline" className="text-xs">{label}</Badge>
+          <Button size="lg" onClick={() => { setExistingReg(null); setResult(null); }}>
+            重新报名
+          </Button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex flex-col items-end gap-2">
+        <div className="flex items-center gap-2">
+          <Badge variant={existingReg.status === "approved" ? "default" : "secondary"}>
+            {existingReg.checked_in_at ? "已签到" : label}
+          </Badge>
+          {existingReg.status === "approved" && !existingReg.checked_in_at && (
+            <Link href={`/checkin/${existingReg.qr_code_token}`}>
+              <Button variant="outline" size="sm">签到码</Button>
+            </Link>
+          )}
+        </div>
+        {existingReg.status !== "declined" && !existingReg.checked_in_at && (
+          <button
+            onClick={handleCancelRegistration}
+            disabled={cancelLoading}
+            className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+          >
+            {cancelLoading ? "取消中..." : "取消报名"}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (isNotPublished) {
+    return (
+      <Button variant="secondary" disabled className="cursor-default">
+        {{ draft: "未发布", cancelled: "已取消", completed: "已结束" }[eventStatus!] || eventStatus}
+      </Button>
+    );
+  }
+
+  if (isDeadlinePassed) {
+    return <Button variant="secondary" disabled className="cursor-default">报名已截止</Button>;
+  }
+
+  if (isFull) {
+    return <Button variant="secondary" disabled className="cursor-default">名额已满</Button>;
+  }
+
+  if (result?.success) {
+    return (
+      <Button variant="secondary" disabled className="cursor-default">
+        {result.message}
+      </Button>
+    );
+  }
+
+  async function handleCancelRegistration() {
+    setCancelLoading(true);
+    try {
+      const res = await fetch(`${API}/api/v1/events/${slug}/registration`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (data.success) {
+        setExistingReg({ ...existingReg!, status: "cancelled" });
+      }
+    } catch {
+      // ignore
+    } finally {
+      setCancelLoading(false);
+    }
+  }
 
   function handleClick() {
     if (hasQuestions) {
@@ -88,13 +218,22 @@ export function RegisterButton({ slug, questions }: Props) {
       const data = await res.json();
 
       if (data.need_phone) {
-        // 保存当前报名答案，绑定手机号后自动继续
         setPendingAnswers(customAnswers);
         setShowPhoneModal(true);
         setShowForm(false);
       } else if (data.success) {
         setResult({ success: true, message: data.data?.message || "报名成功！" });
         setShowForm(false);
+        if (data.data) {
+          setExistingReg({
+            id: data.data.registration_id,
+            status: data.data.status,
+            qr_code_token: data.data.qr_code_token,
+            registered_via: "web",
+            registered_at: new Date().toISOString(),
+            checked_in_at: null,
+          });
+        }
       } else {
         setResult({ success: false, message: data.detail || data.error || "报名失败" });
       }
@@ -160,7 +299,6 @@ export function RegisterButton({ slug, questions }: Props) {
       const data = await res.json();
       if (data.success) {
         setShowPhoneModal(false);
-        // 绑定成功后自动继续报名
         if (pendingAnswers !== null) {
           doRegister(pendingAnswers);
           setPendingAnswers(null);
@@ -184,14 +322,6 @@ export function RegisterButton({ slug, questions }: Props) {
     setPendingAnswers(null);
   }
 
-  if (result?.success) {
-    return (
-      <Button variant="secondary" disabled className="cursor-default">
-        {result.message}
-      </Button>
-    );
-  }
-
   return (
     <>
       <div className="flex flex-col items-end gap-1">
@@ -203,7 +333,6 @@ export function RegisterButton({ slug, questions }: Props) {
         )}
       </div>
 
-      {/* 手机号绑定弹窗 */}
       {showPhoneModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
