@@ -15,7 +15,7 @@ from app.core.deps import get_current_user
 from app.core.security import utc_now
 from app.db import get_db
 from app.models.clawdchat import User
-from app.models.event import Event, EventRegistration
+from app.models.event import Event, EventCoHost, EventRegistration
 
 router = APIRouter()
 
@@ -81,21 +81,33 @@ async def checkin_by_scan(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Check in a guest by scanning their QR code (host action)."""
+    """Check in a guest by scanning their QR code (host or cohost action)."""
     result = await db.execute(
         select(EventRegistration)
-        .options(selectinload(EventRegistration.event))
+        .options(selectinload(EventRegistration.event), selectinload(EventRegistration.user))
         .where(EventRegistration.qr_code_token == body.qr_token)
     )
     reg = result.unique().scalars().first()
     if not reg:
         raise HTTPException(status_code=404, detail="无效的签到码")
 
-    if reg.event and reg.event.host_id != user.id:
-        raise HTTPException(status_code=403, detail="你不是此活动的主办方")
+    if reg.event:
+        is_host = reg.event.host_id == user.id
+        if not is_host:
+            cohost_result = await db.execute(
+                select(EventCoHost.id).where(
+                    EventCoHost.event_id == reg.event_id,
+                    EventCoHost.user_id == user.id,
+                )
+            )
+            is_cohost = cohost_result.scalar_one_or_none() is not None
+            if not is_cohost:
+                raise HTTPException(status_code=403, detail="你不是此活动的主办方或联合主办方")
 
     if reg.status != "approved":
         raise HTTPException(status_code=400, detail=f"报名状态为 {reg.status}，无法签到")
+
+    nickname = reg.user.nickname if reg.user else "未知用户"
 
     if reg.checked_in_at:
         return {
@@ -103,7 +115,7 @@ async def checkin_by_scan(
             "data": {
                 "already_checked_in": True,
                 "checked_in_at": reg.checked_in_at.isoformat(),
-                "message": "此参会者已签到",
+                "message": f"{nickname} 已签到",
             },
         }
 
@@ -114,7 +126,7 @@ async def checkin_by_scan(
         "data": {
             "already_checked_in": False,
             "checked_in_at": reg.checked_in_at.isoformat(),
-            "message": "签到成功！",
+            "message": f"{nickname} 签到成功！",
         },
     }
 

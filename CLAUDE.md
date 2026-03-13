@@ -132,9 +132,9 @@ cd backend && uv run python -m pytest tests/ -v
 
 ### 签到（/api/v1/checkin/）
 - `GET /qr/{token}` — 生成 QR 码图片
-- `GET /verify/{token}` — 验证签到码
-- `POST /scan` — 扫码签到（Host）
-- `POST /self/{token}` — 自助签到
+- `GET /verify/{token}` — 验证签到码（返回 allow_self_checkin）
+- `POST /scan` — 摄像头扫码签到（Host / CoHost）
+- `POST /self/{token}` — 自助签到（受 allow_self_checkin 控制）
 
 ### 通知（/api/v1/notify/）
 - `POST /events/{id}/blast` — Host 群发消息
@@ -173,7 +173,7 @@ cd backend && uv run python -m pytest tests/ -v
 - **参会者头像**: 活动页展示已报名用户头像（"谁要去"）
 - **活动评价**: 活动结束后参会者可提交星级评价+文字反馈
 - **Skill 文件**: 参会者和 Staff 各有专属 Skill
-- **QR 签到**: 生成码 + 扫码/自助签到
+- **QR 签到**: 生成码 + 手机摄像头扫码签到（html5-qrcode）+ 可选自助签到（`allow_self_checkin` 可配置）；Host/CoHost 均可在管理页打开摄像头扫码；管理页报名列表支持单点"签到"按钮
 
 ## EventsBot
 

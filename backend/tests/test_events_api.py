@@ -322,3 +322,143 @@ async def test_publish_already_published(client: AsyncClient):
             resp = await client.post(f"/api/v1/events/{event_id}/publish", cookies=cookies)
             assert resp.status_code == 400
             assert "不能发布" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Check-in & allow_self_checkin tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_checkin_flow_with_self_checkin_control(client: AsyncClient):
+    """Create event with allow_self_checkin=False → register → self-checkin rejected → host scan OK."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        # Host login
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000020",
+            "code": "123456",
+        })
+        host_cookies = {"events_token": resp.cookies.get("events_token")}
+
+        # Create event: self-checkin disabled
+        resp = await client.post("/api/v1/events", json={
+            "title": "No Self Checkin Event",
+            "start_time": "2026-11-01T10:00:00+08:00",
+            "allow_self_checkin": False,
+        }, cookies=host_cookies)
+        assert resp.status_code == 201
+        event_data = resp.json()["data"]
+        event_id = event_data["id"]
+        slug = event_data["slug"]
+        assert event_data["allow_self_checkin"] is False
+
+        # Publish
+        with patch("app.api.v1.events._create_event_circle", new_callable=AsyncMock) as m:
+            m.return_value = None
+            resp = await client.post(f"/api/v1/events/{event_id}/publish", cookies=host_cookies)
+            assert resp.status_code == 200
+
+        # Register
+        resp = await client.post(f"/api/v1/events/{slug}/register", json={
+            "phone": "13800000020",
+        }, cookies=host_cookies)
+        assert resp.status_code == 201
+        qr_token = resp.json()["data"]["qr_code_token"]
+
+        # Verify endpoint returns allow_self_checkin
+        resp = await client.get(f"/api/v1/checkin/verify/{qr_token}")
+        assert resp.status_code == 200
+        assert resp.json()["data"]["allow_self_checkin"] is False
+
+        # Self-checkin should be rejected
+        resp = await client.post(f"/api/v1/checkin/self/{qr_token}")
+        assert resp.status_code == 403
+        assert "不允许自助签到" in resp.json()["detail"]
+
+        # Host scan should work
+        resp = await client.post("/api/v1/checkin/scan", json={
+            "qr_token": qr_token,
+        }, cookies=host_cookies)
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+        assert "签到成功" in resp.json()["data"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_self_checkin_allowed_by_default(client: AsyncClient):
+    """Default event (allow_self_checkin=True) allows self check-in."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000021",
+            "code": "123456",
+        })
+        host_cookies = {"events_token": resp.cookies.get("events_token")}
+
+        resp = await client.post("/api/v1/events", json={
+            "title": "Default Self Checkin Event",
+            "start_time": "2026-11-02T10:00:00+08:00",
+        }, cookies=host_cookies)
+        assert resp.status_code == 201
+        assert resp.json()["data"]["allow_self_checkin"] is True
+        event_id = resp.json()["data"]["id"]
+        slug = resp.json()["data"]["slug"]
+
+        with patch("app.api.v1.events._create_event_circle", new_callable=AsyncMock) as m:
+            m.return_value = None
+            await client.post(f"/api/v1/events/{event_id}/publish", cookies=host_cookies)
+
+        resp = await client.post(f"/api/v1/events/{slug}/register", json={
+            "phone": "13800000021",
+        }, cookies=host_cookies)
+        assert resp.status_code == 201
+        qr_token = resp.json()["data"]["qr_code_token"]
+
+        # Self-checkin should work
+        resp = await client.post(f"/api/v1/checkin/self/{qr_token}")
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_checkin_scan_unauthorized_user(client: AsyncClient):
+    """Non-host/non-cohost cannot scan to check in."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        # Host creates event
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000022",
+            "code": "123456",
+        })
+        host_cookies = {"events_token": resp.cookies.get("events_token")}
+
+        resp = await client.post("/api/v1/events", json={
+            "title": "Scan Auth Test",
+            "start_time": "2026-11-03T10:00:00+08:00",
+        }, cookies=host_cookies)
+        event_id = resp.json()["data"]["id"]
+        slug = resp.json()["data"]["slug"]
+
+        with patch("app.api.v1.events._create_event_circle", new_callable=AsyncMock) as m:
+            m.return_value = None
+            await client.post(f"/api/v1/events/{event_id}/publish", cookies=host_cookies)
+
+        resp = await client.post(f"/api/v1/events/{slug}/register", json={
+            "phone": "13800000022",
+        }, cookies=host_cookies)
+        qr_token = resp.json()["data"]["qr_code_token"]
+
+        # Random user tries to scan
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000099",
+            "code": "123456",
+        })
+        random_cookies = {"events_token": resp.cookies.get("events_token")}
+
+        resp = await client.post("/api/v1/checkin/scan", json={
+            "qr_token": qr_token,
+        }, cookies=random_cookies)
+        assert resp.status_code == 403
