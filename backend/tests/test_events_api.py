@@ -4,6 +4,38 @@ import pytest
 from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient
 
+from app.api.v1.events import _mask_address
+
+
+# ---------------------------------------------------------------------------
+# Address masking unit tests
+# ---------------------------------------------------------------------------
+
+class TestMaskAddress:
+    """Verify _mask_address returns truncated address for detailed inputs
+    and unchanged address for short/generic inputs."""
+
+    def test_masks_street_number(self):
+        result = _mask_address("上海市浦东新区张杨路500号5楼")
+        assert result != "上海市浦东新区张杨路500号5楼"
+        assert "附近" in result
+
+    def test_keeps_short_address_unchanged(self):
+        assert _mask_address("浦东新区") == "浦东新区"
+
+    def test_keeps_empty_unchanged(self):
+        assert _mask_address("") == ""
+
+    def test_masks_building_unit(self):
+        result = _mask_address("北京市海淀区中关村大街1号创业大厦3栋")
+        assert result != "北京市海淀区中关村大街1号创业大厦3栋"
+
+    def test_truncates_long_address_without_markers(self):
+        long_addr = "这是一个没有任何标记的很长的地址描述文本超过十五个字符"
+        result = _mask_address(long_addr)
+        assert result.endswith("...")
+        assert len(result) < len(long_addr)
+
 
 # ---------------------------------------------------------------------------
 # Unauthenticated access
@@ -206,6 +238,61 @@ async def test_update_event_unauthorized(client: AsyncClient):
             "title": "Hijacked Event",
         }, cookies={"events_token": token_b})
         assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_address_masked_only_when_actually_masked(client: AsyncClient):
+    """address_masked should be True only when the address was shortened by masking."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        # Host creates events
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000010",
+            "code": "123456",
+        })
+        host_cookies = {"events_token": resp.cookies.get("events_token")}
+
+        resp = await client.post("/api/v1/events", json={
+            "title": "Address Masking Test Detailed",
+            "start_time": "2026-10-01T10:00:00+08:00",
+            "event_type": "in_person",
+            "location_name": "测试场地",
+            "location_address": "上海市浦东新区张杨路500号5楼",
+            "require_approval": True,
+        }, cookies=host_cookies)
+        assert resp.status_code == 201
+        slug_detailed = resp.json()["data"]["slug"]
+
+        resp = await client.post("/api/v1/events", json={
+            "title": "Address Masking Test Short",
+            "start_time": "2026-10-01T10:00:00+08:00",
+            "event_type": "in_person",
+            "location_name": "测试场地",
+            "location_address": "浦东新区",
+            "require_approval": True,
+        }, cookies=host_cookies)
+        assert resp.status_code == 201
+        slug_short = resp.json()["data"]["slug"]
+
+        # Login as a different user (not the host, not approved)
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000099",
+            "code": "123456",
+        })
+        visitor_cookies = {"events_token": resp.cookies.get("events_token")}
+
+        # Visitor sees detailed address masked
+        resp = await client.get(f"/api/v1/events/{slug_detailed}", cookies=visitor_cookies)
+        data = resp.json()["data"]
+        assert data["address_masked"] is True
+        assert "500号" not in (data["location_address"] or "")
+
+        # Visitor sees short address NOT marked as masked
+        resp = await client.get(f"/api/v1/events/{slug_short}", cookies=visitor_cookies)
+        data = resp.json()["data"]
+        assert data["address_masked"] is False
+        assert data["location_address"] == "浦东新区"
 
 
 @pytest.mark.asyncio

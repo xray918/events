@@ -43,6 +43,7 @@ class Event(Base):
     visibility = Column(String(20), default="public", nullable=False)  # public / private
     require_approval = Column(Boolean, default=False, nullable=False)
     notify_on_register = Column(Boolean, default=False, nullable=False)  # notify host when someone registers
+    allow_self_checkin = Column(Boolean, default=True, nullable=False)  # False = only host/staff can scan to check in
     status = Column(String(20), default="draft", nullable=False, index=True)  # draft / published / cancelled / completed
 
     theme = Column(JSON, default=dict)  # colors, style

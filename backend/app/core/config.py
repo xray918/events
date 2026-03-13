@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:3032"
 
     # ClawdChat API integration
-    clawdchat_api_base: str = "http://localhost:8081/api/v1"
+    clawdchat_api_base: str = "https://clawdchat.ai/api/v1"
     events_bot_api_key: str = ""
 
     # Agent API Key prefix (must match ClawdChat)

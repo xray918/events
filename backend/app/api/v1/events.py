@@ -172,8 +172,10 @@ def _build_event_response(event: Event, mask_address: bool = False) -> dict:
     loc_address = event.location_address
     address_masked = False
     if mask_address and loc_address:
-        loc_address = _mask_address(loc_address)
-        address_masked = True
+        masked = _mask_address(loc_address)
+        if masked != loc_address:
+            loc_address = masked
+            address_masked = True
 
     cohosts_info = None
     if event.cohosts:
@@ -205,6 +207,7 @@ def _build_event_response(event: Event, mask_address: bool = False) -> dict:
         "visibility": event.visibility,
         "require_approval": event.require_approval,
         "notify_on_register": event.notify_on_register,
+        "allow_self_checkin": event.allow_self_checkin,
         "status": event.status,
         "theme": event.theme,
         "host": host_info,
@@ -409,6 +412,7 @@ async def create_event(
         visibility=data.visibility,
         require_approval=data.require_approval,
         notify_on_register=data.notify_on_register,
+        allow_self_checkin=data.allow_self_checkin,
         theme=data.theme or {},
         host_id=host_id,
         approval_rules=data.approval_rules,
@@ -563,6 +567,7 @@ async def clone_event(
         visibility=source.visibility,
         require_approval=source.require_approval,
         notify_on_register=source.notify_on_register,
+        allow_self_checkin=source.allow_self_checkin,
         theme=source.theme or {},
         host_id=caller_id,
         approval_rules=source.approval_rules,
@@ -598,9 +603,14 @@ async def clone_event(
 # Publish / Cancel / Complete
 # ---------------------------------------------------------------------------
 
+class PublishRequest(BaseModel):
+    sync_to_clawdchat: bool = True
+
+
 @router.post("/{event_id}/publish")
 async def publish_event(
     event_id: str,
+    body: Optional[PublishRequest] = None,
     authorization: Optional[str] = Header(None),
     agent: Optional[Agent] = Depends(get_optional_agent),
     user: Optional[User] = Depends(get_optional_user),
@@ -623,6 +633,55 @@ async def publish_event(
 
     event.status = "published"
 
+    sync = body.sync_to_clawdchat if body else True
+    if sync:
+        agent_api_key = None
+        if agent and authorization:
+            parts = authorization.split()
+            if len(parts) == 2:
+                agent_api_key = parts[1]
+
+        try:
+            circle_id = await _create_event_circle(
+                event_title=event.title,
+                event_description=event.description,
+                event_slug=event.slug,
+                agent_api_key=agent_api_key,
+            )
+            if circle_id:
+                event.circle_id = circle_id
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Circle creation failed for event {event_id}: {e}")
+
+    return {"success": True, "data": {"id": str(event.id), "status": event.status, "circle_id": str(event.circle_id) if event.circle_id else None}}
+
+
+@router.post("/{event_id}/sync-clawdchat")
+async def sync_to_clawdchat(
+    event_id: str,
+    authorization: Optional[str] = Header(None),
+    agent: Optional[Agent] = Depends(get_optional_agent),
+    user: Optional[User] = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sync a published event to ClawdChat (create circle + post). Idempotent — skips if already synced."""
+    if not user and not agent:
+        raise HTTPException(status_code=401, detail="请先登录或使用 Agent API Key 认证")
+
+    result = await db.execute(select(Event).where(Event.id == event_id))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="活动不存在")
+
+    caller_id = user.id if user else (agent.owner_id if agent else None)
+    if event.host_id != caller_id:
+        raise HTTPException(status_code=403, detail="无权操作此活动")
+    if event.status != "published":
+        raise HTTPException(status_code=400, detail="只有已发布的活动才能同步到虾聊")
+    if event.circle_id:
+        return {"success": True, "data": {"id": str(event.id), "circle_id": str(event.circle_id), "message": "已同步过虾聊"}}
+
     agent_api_key = None
     if agent and authorization:
         parts = authorization.split()
@@ -640,9 +699,13 @@ async def publish_event(
             event.circle_id = circle_id
     except Exception as e:
         import logging
-        logging.getLogger(__name__).error(f"Circle creation failed for event {event_id}: {e}")
+        logging.getLogger(__name__).error(f"Sync to ClawdChat failed for event {event_id}: {e}")
+        raise HTTPException(status_code=500, detail="同步到虾聊失败，请稍后重试")
 
-    return {"success": True, "data": {"id": str(event.id), "status": event.status, "circle_id": str(event.circle_id) if event.circle_id else None}}
+    if not event.circle_id:
+        raise HTTPException(status_code=500, detail="同步到虾聊失败，请稍后重试")
+
+    return {"success": True, "data": {"id": str(event.id), "circle_id": str(event.circle_id)}}
 
 
 @router.post("/{event_id}/cancel")
@@ -1042,9 +1105,11 @@ async def get_event_poster(
     slug: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate a shareable poster image (PNG) with QR code."""
+    """Generate a shareable poster image (PNG) that resembles the mobile event page."""
     import io
     import qrcode
+    import re as _re
+    from datetime import datetime
     from PIL import Image, ImageDraw, ImageFont
     from fastapi.responses import StreamingResponse
 
@@ -1056,56 +1121,141 @@ async def get_event_poster(
         raise HTTPException(status_code=404, detail="活动不存在")
 
     W, H = 750, 1334
+    PAD = 40
+    content_w = W - PAD * 2
     canvas = Image.new("RGB", (W, H), "#ffffff")
     draw = ImageDraw.Draw(canvas)
 
     font_path = _find_cjk_font()
-    font_title = ImageFont.truetype(font_path, 40) if font_path else ImageFont.load_default()
-    font_body = ImageFont.truetype(font_path, 26) if font_path else ImageFont.load_default()
-    font_small = ImageFont.truetype(font_path, 22) if font_path else ImageFont.load_default()
+    def _font(size):
+        return ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
 
-    cover_h = 450
+    font_title = _font(44)
+    font_body = _font(26)
+    font_small = _font(22)
+    font_badge = _font(20)
+    font_desc = _font(23)
+
+    # --- Cover image (crop-to-fill) ---
+    cover_h = 420
+    cover_loaded = False
     if event.cover_image_url:
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
                 img_resp = await client.get(event.cover_image_url)
             if img_resp.status_code == 200:
-                cover_img = Image.open(io.BytesIO(img_resp.content))
+                cover_img = Image.open(io.BytesIO(img_resp.content)).convert("RGB")
+                cw, ch = cover_img.size
+                target_ratio = W / cover_h
+                current_ratio = cw / ch
+                if current_ratio > target_ratio:
+                    new_w = int(ch * target_ratio)
+                    left = (cw - new_w) // 2
+                    cover_img = cover_img.crop((left, 0, left + new_w, ch))
+                else:
+                    new_h = int(cw / target_ratio)
+                    top = 0
+                    cover_img = cover_img.crop((0, top, cw, top + new_h))
                 cover_img = cover_img.resize((W, cover_h), Image.LANCZOS)
                 canvas.paste(cover_img, (0, 0))
-            else:
-                _draw_gradient(draw, W, cover_h, event.id)
+                cover_loaded = True
         except Exception:
-            _draw_gradient(draw, W, cover_h, event.id)
-    else:
+            pass
+    if not cover_loaded:
         _draw_gradient(draw, W, cover_h, event.id)
 
-    y = cover_h + 30
-    _draw_text_wrapped(draw, event.title, 40, y, W - 80, font_title, "#1a1a1a")
-    y += _text_height(draw, event.title, W - 80, font_title) + 20
+    # Gradient overlay at bottom of cover for smooth transition
+    overlay = Image.new("RGBA", (W, 100), (0, 0, 0, 0))
+    ov_draw = ImageDraw.Draw(overlay)
+    for yi in range(100):
+        alpha = int(120 * yi / 100)
+        ov_draw.line([(0, yi), (W, yi)], fill=(0, 0, 0, alpha))
+    canvas_rgba = canvas.convert("RGBA")
+    canvas_rgba.paste(overlay, (0, cover_h - 100), overlay)
+    canvas = canvas_rgba.convert("RGB")
+    draw = ImageDraw.Draw(canvas)
 
-    type_labels = {"in_person": "线下", "online": "线上", "hybrid": "混合"}
+    y = cover_h + 24
+
+    # --- Badges (event type + approval) ---
+    type_labels = {"in_person": "线下活动", "online": "线上活动", "hybrid": "混合活动"}
+    badge_text = type_labels.get(event.event_type, event.event_type)
+    bw = int(draw.textlength(badge_text, font=font_badge)) + 24
+    draw.rounded_rectangle([(PAD, y), (PAD + bw, y + 32)], radius=16, fill="#f3f4f6")
+    draw.text((PAD + 12, y + 5), badge_text, font=font_badge, fill="#555555")
+    bx = PAD + bw + 10
+    if event.require_approval:
+        at = "需审批"
+        aw = int(draw.textlength(at, font=font_badge)) + 24
+        draw.rounded_rectangle([(bx, y), (bx + aw, y + 32)], radius=16, fill="#fff7ed")
+        draw.text((bx + 12, y + 5), at, font=font_badge, fill="#c2410c")
+    y += 48
+
+    # --- Title ---
+    _draw_text_wrapped(draw, event.title, PAD, y, content_w, font_title, "#111111")
+    y += _text_height(draw, event.title, content_w, font_title) + 16
+
+    # --- Info card background ---
+    card_top = y
+    card_items_h = 0
+    info_lines = []
+
     if event.start_time:
-        from datetime import datetime
         dt = event.start_time
         if isinstance(dt, str):
             dt = datetime.fromisoformat(dt)
         date_str = dt.strftime("%Y年%m月%d日 %H:%M")
-        draw.text((40, y), f"🗓  {date_str}", font=font_body, fill="#555555")
-        y += 40
+        if event.end_time:
+            edt = event.end_time
+            if isinstance(edt, str):
+                edt = datetime.fromisoformat(edt)
+            date_str += f" — {edt.strftime('%H:%M')}"
+        info_lines.append(("📅", date_str))
 
     if event.location_name:
-        draw.text((40, y), f"📍  {event.location_name}", font=font_body, fill="#555555")
-        y += 40
-
-    draw.text((40, y), f"🏷  {type_labels.get(event.event_type, event.event_type)}", font=font_body, fill="#555555")
-    y += 40
+        loc = event.location_name
+        if event.location_address:
+            loc += f" · {event.location_address}"
+        if len(loc) > 35:
+            loc = loc[:35] + "..."
+        info_lines.append(("📍", loc))
 
     if event.host:
-        draw.text((40, y), f"主办：{event.host.nickname}", font=font_small, fill="#888888")
-        y += 35
+        info_lines.append(("👤", f"主办：{event.host.nickname}"))
 
+    card_items_h = len(info_lines) * 44 + 20
+    draw.rounded_rectangle(
+        [(PAD - 4, card_top), (W - PAD + 4, card_top + card_items_h)],
+        radius=14, fill="#fafafa", outline="#eeeeee",
+    )
+
+    iy = card_top + 10
+    for icon, text in info_lines:
+        draw.text((PAD + 8, iy), icon, font=font_body, fill="#666666")
+        draw.text((PAD + 46, iy), text, font=font_body, fill="#333333")
+        iy += 44
+    y = card_top + card_items_h + 20
+
+    # --- Description excerpt ---
+    if event.description:
+        desc = event.description
+        desc = _re.sub(r'[#*_`>\[\]()!~]', '', desc)
+        desc = _re.sub(r'\n{2,}', '\n', desc).strip()
+        desc_lines = desc.split('\n')
+        clean_lines = [ln.strip() for ln in desc_lines if ln.strip() and not ln.strip().startswith('-')]
+        desc = '\n'.join(clean_lines[:6])
+        if len(desc) > 200:
+            desc = desc[:200] + "..."
+
+        draw.text((PAD, y), "活动详情", font=font_body, fill="#111111")
+        y += 36
+        draw.line([(PAD, y), (W - PAD, y)], fill="#eeeeee", width=1)
+        y += 10
+        _draw_text_wrapped(draw, desc, PAD, y, content_w, font_desc, "#555555")
+        y += _text_height(draw, desc, content_w, font_desc) + 10
+
+    # --- QR code section ---
     from app.core.config import settings
     event_url = f"{settings.frontend_url}/e/{event.slug}"
     qr = qrcode.QRCode(version=1, box_size=8, border=2)
@@ -1113,15 +1263,22 @@ async def get_event_poster(
     qr.make(fit=True)
     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
-    qr_size = 220
+    qr_size = 200
     qr_img = qr_img.resize((qr_size, qr_size), Image.LANCZOS)
     qr_x = (W - qr_size) // 2
-    qr_y = H - qr_size - 100
+    qr_y = max(y + 20, H - qr_size - 90)
+
+    # QR card background
+    qr_card_pad = 30
+    draw.rounded_rectangle(
+        [(PAD, qr_y - qr_card_pad), (W - PAD, H - 20)],
+        radius=16, fill="#f9fafb", outline="#e5e7eb",
+    )
     canvas.paste(qr_img, (qr_x, qr_y))
 
-    draw.text((0, qr_y + qr_size + 10), "扫码查看活动详情", font=font_small, fill="#888888")
-    text_w = draw.textlength("扫码查看活动详情", font=font_small)
-    draw.text(((W - text_w) / 2, qr_y + qr_size + 10), "扫码查看活动详情", font=font_small, fill="#888888")
+    label = "扫码查看活动详情"
+    text_w = draw.textlength(label, font=font_small)
+    draw.text(((W - text_w) / 2, qr_y + qr_size + 12), label, font=font_small, fill="#888888")
 
     buf = io.BytesIO()
     canvas.save(buf, format="PNG", quality=95)
@@ -1170,33 +1327,34 @@ def _draw_gradient(draw, w: int, h: int, event_id):
         draw.line([(0, y), (w, y)], fill=(r, g, b))
 
 
+def _wrap_lines(draw, text: str, max_w: int, font) -> list[str]:
+    """Split text into wrapped lines, respecting explicit newlines."""
+    result = []
+    for paragraph in text.split("\n"):
+        if not paragraph:
+            result.append("")
+            continue
+        current = ""
+        for char in paragraph:
+            test = current + char
+            if draw.textlength(test, font=font) > max_w:
+                result.append(current)
+                current = char
+            else:
+                current = test
+        if current:
+            result.append(current)
+    return result
+
+
 def _draw_text_wrapped(draw, text: str, x: int, y: int, max_w: int, font, fill: str):
     """Draw text with word wrapping."""
-    lines = []
-    current = ""
-    for char in text:
-        test = current + char
-        if draw.textlength(test, font=font) > max_w:
-            lines.append(current)
-            current = char
-        else:
-            current = test
-    if current:
-        lines.append(current)
-    for line in lines:
-        draw.text((x, y), line, font=font, fill=fill)
+    for line in _wrap_lines(draw, text, max_w, font):
+        if line:
+            draw.text((x, y), line, font=font, fill=fill)
         y += font.size + 8
 
 
 def _text_height(draw, text: str, max_w: int, font) -> int:
     """Calculate wrapped text height."""
-    lines = 1
-    current = ""
-    for char in text:
-        test = current + char
-        if draw.textlength(test, font=font) > max_w:
-            lines += 1
-            current = char
-        else:
-            current = test
-    return lines * (font.size + 8)
+    return len(_wrap_lines(draw, text, max_w, font)) * (font.size + 8)

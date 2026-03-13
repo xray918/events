@@ -66,6 +66,7 @@ async def verify_qr_token(qr_token: str, db: AsyncSession = Depends(get_db)):
             "status": reg.status,
             "already_checked_in": reg.checked_in_at is not None,
             "checked_in_at": reg.checked_in_at.isoformat() if reg.checked_in_at else None,
+            "allow_self_checkin": reg.event.allow_self_checkin if reg.event else True,
         },
     }
 
@@ -125,11 +126,16 @@ async def self_checkin(
 ):
     """Self check-in by QR token (attendee scans event check-in page)."""
     result = await db.execute(
-        select(EventRegistration).where(EventRegistration.qr_code_token == qr_token)
+        select(EventRegistration)
+        .options(selectinload(EventRegistration.event))
+        .where(EventRegistration.qr_code_token == qr_token)
     )
-    reg = result.scalar_one_or_none()
+    reg = result.unique().scalars().first()
     if not reg:
         raise HTTPException(status_code=404, detail="无效的签到码")
+
+    if reg.event and not reg.event.allow_self_checkin:
+        raise HTTPException(status_code=403, detail="此活动不允许自助签到，请找工作人员扫码签到")
 
     if reg.status != "approved":
         raise HTTPException(status_code=400, detail="报名尚未通过审批")

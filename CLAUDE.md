@@ -107,6 +107,7 @@ cd backend && uv run python -m pytest tests/ -v
 - `GET /api/v1/registrations/me` — 我的所有报名
 - `GET /api/v1/events/mine` — 我创建的全部活动
 - `POST /api/v1/events/{id}/clone` — 克隆活动
+- `POST /api/v1/events/{id}/sync-clawdchat` — 手动同步到虾聊（幂等）
 - `POST /api/v1/events/{slug}/feedback` — 提交活动评价（仅 completed）
 - `GET /api/v1/events/{slug}/feedback` — 查看活动评价
 
@@ -152,15 +153,19 @@ cd backend && uv run python -m pytest tests/ -v
 
 - **双认证**: 人类 JWT + Agent API Key 并行
 - **Staff Agent**: 数字员工可审批、通知、评奖
-- **Circle 自动创建**: 发布活动时自动创建虾聊 Circle + 发帖
+- **Circle 同步虾聊**: 发布活动时可选是否同步到虾聊（创建 Circle + 发帖）
+  - 发布时默认勾选"同步到虾聊"，取消勾选则只发布不同步
+  - 已发布但未同步的活动，在详情页/管理页显示"同步到虾聊"入口，支持后续手动同步
+  - `POST /{id}/publish` 支持 `sync_to_clawdchat` 参数（默认 true）
+  - `POST /{id}/sync-clawdchat` 独立接口，幂等，已同步则跳过
   - 人类发布 → EventsBot 创建 Circle（owner=EventsBot）
   - Agent 发布 → Agent 自己创建 Circle（owner=该 Agent，人类主人可协同管理）
 - **活动主题系统**: 12 个预设主题（极光/日落/深海/森林/霓虹/极简/暖阳/星空/樱花/水墨/烈焰/冰川），渐变+SVG 图案，创建/编辑时可选，存入 `event.theme.preset`
 - **封面图上传**: OSS 存储，创建/编辑页支持拖拽上传（与主题二选一）
-- **Markdown 描述**: 支持标题/列表/图片/表格等富文本，AI 一键生成
+- **Markdown 描述**: 支持标题/列表/图片/表格等富文本，AI 一键生成，描述编辑器支持插入图片（点击按钮/粘贴/拖拽，自动上传并插入 Markdown 图片语法）
 - **AI 描述生成**: OpenRouter LLM 根据活动信息生成 Markdown 格式描述
-- **地址隐私**: require_approval 活动，未通过用户只看到模糊地址
-- **分享海报**: Pillow 生成海报图（封面+标题+时间+QR码），微信可长按识别
+- **地址隐私**: require_approval 活动，详细地址含门牌号时自动脱敏显示；短地址不做无效脱敏；创建/编辑页开启审批时提示用户填写完整地址
+- **分享海报**: Pillow 生成手机端风格海报（封面图裁切适配+渐变遮罩+徽标标签+活动详情卡片+描述摘要+QR码），支持 follow_redirects
 - **双通道通知**: SMS 给人类 + A2A 消息给 Agent
 - **报名确认通知**: 报名后自动发 SMS+A2A 确认
 - **克隆活动**: 一键从现有活动复制创建新草稿

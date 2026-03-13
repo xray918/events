@@ -40,6 +40,7 @@ class EventCreate(BaseModel):
     visibility: str = "public"
     require_approval: bool = False
     notify_on_register: bool = False
+    allow_self_checkin: bool = True
     theme: Optional[dict] = None
     custom_questions: Optional[list[CustomQuestionCreate]] = None
     staff_agents: Optional[list[StaffAgentAssign]] = None
@@ -62,6 +63,7 @@ class EventUpdate(BaseModel):
     visibility: Optional[str] = None
     require_approval: Optional[bool] = None
     notify_on_register: Optional[bool] = None
+    allow_self_checkin: Optional[bool] = None
     theme: Optional[dict] = None
     approval_rules: Optional[dict] = None
     custom_questions: Optional[list[CustomQuestionCreate]] = None
@@ -83,6 +85,7 @@ class EventResponse(BaseModel):
     capacity: Optional[int] = None
     visibility: str
     require_approval: bool
+    allow_self_checkin: bool = True
     status: str
     theme: Optional[dict] = None
     host: Optional[dict] = None
