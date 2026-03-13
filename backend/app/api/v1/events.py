@@ -204,6 +204,37 @@ async def list_events(
 
 
 # ---------------------------------------------------------------------------
+# My hosted events (all statuses, for the event creator)
+# ---------------------------------------------------------------------------
+
+@router.get("/mine")
+async def list_my_events(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all events created by the current user (all statuses)."""
+    where_clauses = [Event.host_id == user.id]
+
+    count_q = select(func.count()).select_from(Event).where(*where_clauses)
+    total = (await db.execute(count_q)).scalar() or 0
+
+    query = (
+        select(Event)
+        .options(selectinload(Event.host), selectinload(Event.registrations))
+        .where(*where_clauses)
+        .order_by(Event.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    events = result.unique().scalars().all()
+
+    return {"success": True, "data": [_build_event_response(e) for e in events], "total": total}
+
+
+# ---------------------------------------------------------------------------
 # Past events (completed / cancelled)
 # ---------------------------------------------------------------------------
 

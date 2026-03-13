@@ -17,6 +17,7 @@ from app.core.security import utc_now
 from app.db import get_db
 from app.models.clawdchat import Agent, User
 from app.models.event import Event, EventRegistration, EventStaff, EventWinner
+from app.services.notify import notify_registration_approved
 
 router = APIRouter()
 
@@ -107,7 +108,7 @@ async def approve_registration(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_host(user, event_id, db)
+    event = await _require_host(user, event_id, db)
     result = await db.execute(
         select(EventRegistration).where(
             EventRegistration.id == reg_id,
@@ -121,6 +122,13 @@ async def approve_registration(
     reg.status = "approved"
     reg.approved_by = user.id
     reg.approved_at = utc_now()
+
+    try:
+        await notify_registration_approved(reg, event.title, db)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(f"Notification failed for reg {reg_id}")
+
     return {"success": True, "data": {"id": str(reg.id), "status": "approved"}}
 
 
@@ -154,17 +162,32 @@ async def batch_approve(
     db: AsyncSession = Depends(get_db),
 ):
     """Approve all pending registrations."""
-    await _require_host(user, event_id, db)
-    stmt = (
-        update(EventRegistration)
-        .where(
+    event = await _require_host(user, event_id, db)
+
+    pending_q = await db.execute(
+        select(EventRegistration).where(
             EventRegistration.event_id == event_id,
             EventRegistration.status.in_(["pending", "waitlisted"]),
         )
-        .values(status="approved", approved_by=user.id, approved_at=utc_now())
     )
-    result = await db.execute(stmt)
-    return {"success": True, "data": {"approved_count": result.rowcount}}
+    pending_regs = pending_q.scalars().all()
+
+    for reg in pending_regs:
+        reg.status = "approved"
+        reg.approved_by = user.id
+        reg.approved_at = utc_now()
+
+    await db.flush()
+
+    import logging
+    logger = logging.getLogger(__name__)
+    for reg in pending_regs:
+        try:
+            await notify_registration_approved(reg, event.title, db)
+        except Exception:
+            logger.warning(f"Batch notification failed for reg {reg.id}")
+
+    return {"success": True, "data": {"approved_count": len(pending_regs)}}
 
 
 # ---------------------------------------------------------------------------
