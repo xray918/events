@@ -11,13 +11,17 @@ interface Props {
   eventId: string;
   eventStatus: string;
   hostId: string;
+  circleId?: string | null;
 }
 
-export function HostActions({ eventId, eventStatus, hostId }: Props) {
+export function HostActions({ eventId, eventStatus, hostId, circleId: initialCircleId }: Props) {
   const router = useRouter();
   const [isHost, setIsHost] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
   const [status, setStatus] = useState(eventStatus);
+  const [syncToClawdchat, setSyncToClawdchat] = useState(true);
+  const [circleId, setCircleId] = useState(initialCircleId);
 
   useEffect(() => {
     fetch(`${API}/api/v1/auth/me`, { credentials: "include" })
@@ -37,14 +41,34 @@ export function HostActions({ eventId, eventStatus, hostId }: Props) {
       const res = await fetch(`${API}/api/v1/events/${eventId}/publish`, {
         method: "POST",
         credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sync_to_clawdchat: syncToClawdchat }),
       });
       const data = await res.json();
       if (data.success) {
         setStatus("published");
+        if (data.data?.circle_id) setCircleId(data.data.circle_id);
         router.refresh();
       }
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSyncClawdchat() {
+    setSyncLoading(true);
+    try {
+      const res = await fetch(`${API}/api/v1/events/${eventId}/sync-clawdchat`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (data.success && data.data?.circle_id) {
+        setCircleId(data.data.circle_id);
+        router.refresh();
+      }
+    } finally {
+      setSyncLoading(false);
     }
   }
 
@@ -59,8 +83,24 @@ export function HostActions({ eventId, eventStatus, hostId }: Props) {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {status === "draft" && (
-            <Button size="sm" onClick={handlePublish} disabled={loading}>
-              {loading ? "发布中..." : "发布活动"}
+            <>
+              <label className="flex items-center gap-1.5 text-sm cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={syncToClawdchat}
+                  onChange={(e) => setSyncToClawdchat(e.target.checked)}
+                  className="rounded border-gray-300"
+                />
+                同步到虾聊
+              </label>
+              <Button size="sm" onClick={handlePublish} disabled={loading}>
+                {loading ? "发布中..." : "发布活动"}
+              </Button>
+            </>
+          )}
+          {status === "published" && !circleId && (
+            <Button size="sm" variant="outline" onClick={handleSyncClawdchat} disabled={syncLoading}>
+              {syncLoading ? "同步中..." : "同步到虾聊"}
             </Button>
           )}
           <Button size="sm" variant="outline" onClick={() => router.push(`/manage/${eventId}`)}>

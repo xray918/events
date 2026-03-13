@@ -75,34 +75,21 @@ class CheckinRequest(BaseModel):
     qr_token: str
 
 
-@router.post("/scan")
-async def checkin_by_scan(
-    body: CheckinRequest,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Check in a guest by scanning their QR code (host or cohost action)."""
+class CheckinByKeyRequest(BaseModel):
+    qr_token: str
+    checkin_key: str
+
+
+async def _do_checkin(qr_token: str, db: AsyncSession) -> dict:
+    """Core check-in logic shared by /scan and /scan-by-key."""
     result = await db.execute(
         select(EventRegistration)
-        .options(selectinload(EventRegistration.event), selectinload(EventRegistration.user))
-        .where(EventRegistration.qr_code_token == body.qr_token)
+        .options(selectinload(EventRegistration.user))
+        .where(EventRegistration.qr_code_token == qr_token)
     )
     reg = result.unique().scalars().first()
     if not reg:
         raise HTTPException(status_code=404, detail="无效的签到码")
-
-    if reg.event:
-        is_host = reg.event.host_id == user.id
-        if not is_host:
-            cohost_result = await db.execute(
-                select(EventCoHost.id).where(
-                    EventCoHost.event_id == reg.event_id,
-                    EventCoHost.user_id == user.id,
-                )
-            )
-            is_cohost = cohost_result.scalar_one_or_none() is not None
-            if not is_cohost:
-                raise HTTPException(status_code=403, detail="你不是此活动的主办方或联合主办方")
 
     if reg.status != "approved":
         raise HTTPException(status_code=400, detail=f"报名状态为 {reg.status}，无法签到")
@@ -120,7 +107,6 @@ async def checkin_by_scan(
         }
 
     reg.checked_in_at = utc_now()
-
     return {
         "success": True,
         "data": {
@@ -129,6 +115,64 @@ async def checkin_by_scan(
             "message": f"{nickname} 签到成功！",
         },
     }
+
+
+@router.post("/scan")
+async def checkin_by_scan(
+    body: CheckinRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check in a guest by scanning their QR code (host or cohost action)."""
+    result = await db.execute(
+        select(EventRegistration)
+        .options(selectinload(EventRegistration.event))
+        .where(EventRegistration.qr_code_token == body.qr_token)
+    )
+    reg = result.unique().scalars().first()
+    if not reg:
+        raise HTTPException(status_code=404, detail="无效的签到码")
+
+    if reg.event:
+        is_host = reg.event.host_id == user.id
+        if not is_host:
+            cohost_result = await db.execute(
+                select(EventCoHost.id).where(
+                    EventCoHost.event_id == reg.event_id,
+                    EventCoHost.user_id == user.id,
+                )
+            )
+            if cohost_result.scalar_one_or_none() is None:
+                raise HTTPException(status_code=403, detail="你不是此活动的主办方或联合主办方")
+
+    return await _do_checkin(body.qr_token, db)
+
+
+@router.post("/scan-by-key")
+async def checkin_by_key(
+    body: CheckinByKeyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Check in a guest using a shared check-in key (no login required)."""
+    result = await db.execute(
+        select(Event.id).where(Event.checkin_key == body.checkin_key)
+    )
+    event_id = result.scalar_one_or_none()
+    if event_id is None:
+        raise HTTPException(status_code=403, detail="无效的签到密钥")
+
+    reg_result = await db.execute(
+        select(EventRegistration.event_id).where(
+            EventRegistration.qr_code_token == body.qr_token
+        )
+    )
+    reg_event_id = reg_result.scalar_one_or_none()
+    if reg_event_id is None:
+        raise HTTPException(status_code=404, detail="无效的签到码")
+    if reg_event_id != event_id:
+        raise HTTPException(status_code=400, detail="此签到码不属于当前活动")
+
+    return await _do_checkin(body.qr_token, db)
 
 
 @router.post("/self/{qr_token}")

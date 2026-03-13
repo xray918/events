@@ -15,6 +15,7 @@ interface CheckinInfo {
   status: string;
   already_checked_in: boolean;
   checked_in_at: string | null;
+  allow_self_checkin: boolean;
 }
 
 export default function CheckinPage() {
@@ -98,7 +99,11 @@ export default function CheckinPage() {
             </div>
           ) : info.status === "approved" ? (
             <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">请出示此二维码给工作人员扫描，或自助签到</p>
+              <p className="text-sm text-muted-foreground">
+                {info.allow_self_checkin
+                  ? "请出示此二维码给工作人员扫描，或自助签到"
+                  : "请出示此二维码给工作人员扫描签到"}
+              </p>
               {qrUrl && (
                 <div className="flex justify-center">
                   <img
@@ -112,14 +117,16 @@ export default function CheckinPage() {
                 <p className="text-xs text-muted-foreground">参会者</p>
                 <p className="font-medium">{info.user_nickname || "—"}</p>
               </div>
-              <Button
-                onClick={handleSelfCheckin}
-                disabled={selfCheckinLoading}
-                className="w-full"
-                size="lg"
-              >
-                {selfCheckinLoading ? "签到中..." : "自助签到"}
-              </Button>
+              {info.allow_self_checkin && (
+                <Button
+                  onClick={handleSelfCheckin}
+                  disabled={selfCheckinLoading}
+                  className="w-full"
+                  size="lg"
+                >
+                  {selfCheckinLoading ? "签到中..." : "自助签到"}
+                </Button>
+              )}
               {error && <p className="text-xs text-destructive">{error}</p>}
             </div>
           ) : (

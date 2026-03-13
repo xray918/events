@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useRequireAuth } from "@/hooks/use-require-auth";
+import { QrScanner } from "@/components/qr-scanner";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
@@ -23,6 +24,7 @@ interface EventInfo {
   event_type: string;
   registration_count: number;
   capacity: number | null;
+  circle_id: string | null;
 }
 
 interface Registration {
@@ -85,6 +87,7 @@ export default function ManagePage() {
 
   const [actionLoading, setActionLoading] = useState("");
   const [confirmDialog, setConfirmDialog] = useState<{ type: string; regId?: string } | null>(null);
+  const [syncToClawdchat, setSyncToClawdchat] = useState(true);
 
   // Blast notification state
   const [showBlast, setShowBlast] = useState(false);
@@ -113,6 +116,14 @@ export default function ManagePage() {
   // Winners state
   const [showWinners, setShowWinners] = useState(false);
   const [winners, setWinners] = useState<WinnerInfo[]>([]);
+
+  // Check-in scanner state
+  const [showCheckin, setShowCheckin] = useState(false);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [scanResult, setScanResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [checkinKey, setCheckinKey] = useState<string | null>(null);
+  const [checkinKeyLoading, setCheckinKeyLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   async function loadEvent() {
     try {
@@ -240,6 +251,49 @@ export default function ManagePage() {
     loadData();
   }
 
+  async function loadCheckinKey() {
+    try {
+      const res = await fetch(`${API}/api/v1/host/events/${eventId}/checkin-key`, { credentials: "include" });
+      const data = await res.json();
+      if (data.success) setCheckinKey(data.data.checkin_key || null);
+    } catch { /* ignore */ }
+  }
+
+  async function handleGenerateCheckinKey() {
+    setCheckinKeyLoading(true);
+    try {
+      const res = await fetch(`${API}/api/v1/host/events/${eventId}/checkin-key`, {
+        method: "POST", credentials: "include",
+      });
+      const data = await res.json();
+      if (data.success) setCheckinKey(data.data.checkin_key);
+    } finally { setCheckinKeyLoading(false); }
+  }
+
+  async function handleRevokeCheckinKey() {
+    setCheckinKeyLoading(true);
+    try {
+      await fetch(`${API}/api/v1/host/events/${eventId}/checkin-key`, {
+        method: "DELETE", credentials: "include",
+      });
+      setCheckinKey(null);
+    } finally { setCheckinKeyLoading(false); }
+  }
+
+  function getStaffCheckinUrl() {
+    if (!checkinKey) return "";
+    const base = typeof window !== "undefined" ? window.location.origin : "";
+    return `${base}/checkin-staff/${eventId}?key=${checkinKey}`;
+  }
+
+  async function copyCheckinLink() {
+    const url = getStaffCheckinUrl();
+    if (!url) return;
+    await navigator.clipboard.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
   useEffect(() => {
     if (authenticated) {
       loadEvent();
@@ -248,13 +302,30 @@ export default function ManagePage() {
       loadCohosts();
       loadStaff();
       loadWinners();
+      loadCheckinKey();
     }
   }, [eventId, authenticated]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handlePublish() {
     setActionLoading("publish");
     try {
-      await fetch(`${API}/api/v1/events/${eventId}/publish`, { method: "POST", credentials: "include" });
+      await fetch(`${API}/api/v1/events/${eventId}/publish`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sync_to_clawdchat: syncToClawdchat }),
+      });
+      await loadEvent();
+    } finally { setActionLoading(""); }
+  }
+
+  async function handleSyncClawdchat() {
+    setActionLoading("sync");
+    try {
+      await fetch(`${API}/api/v1/events/${eventId}/sync-clawdchat`, {
+        method: "POST",
+        credentials: "include",
+      });
       await loadEvent();
     } finally { setActionLoading(""); }
   }
@@ -294,6 +365,42 @@ export default function ManagePage() {
         router.push(`/edit/${data.data.id}`);
       }
     } finally { setActionLoading(""); }
+  }
+
+  const lastScannedRef = useRef<string>("");
+  const scanTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  async function handleScanCheckin(token: string) {
+    const t = token.trim();
+    if (!t) return;
+    if (t === lastScannedRef.current) return;
+    lastScannedRef.current = t;
+    setScanLoading(true);
+    setScanResult(null);
+    try {
+      const res = await fetch(`${API}/api/v1/checkin/scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ qr_token: t }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setScanResult({ ok: true, message: data.data.message });
+        loadData();
+      } else {
+        setScanResult({ ok: false, message: data.detail || "签到失败" });
+      }
+    } catch {
+      setScanResult({ ok: false, message: "网络错误" });
+    } finally {
+      setScanLoading(false);
+      clearTimeout(scanTimerRef.current);
+      scanTimerRef.current = setTimeout(() => {
+        lastScannedRef.current = "";
+        setScanResult(null);
+      }, 3000);
+    }
   }
 
   async function handleApprove(regId: string) {
@@ -396,8 +503,24 @@ export default function ManagePage() {
       {/* Action Buttons */}
       <div className="flex flex-wrap items-center gap-2 mb-6">
         {event?.status === "draft" && (
-          <Button onClick={handlePublish} disabled={actionLoading === "publish"}>
-            {actionLoading === "publish" ? "发布中..." : "发布活动"}
+          <>
+            <label className="flex items-center gap-1.5 text-sm cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={syncToClawdchat}
+                onChange={(e) => setSyncToClawdchat(e.target.checked)}
+                className="rounded border-gray-300"
+              />
+              同步到虾聊
+            </label>
+            <Button onClick={handlePublish} disabled={actionLoading === "publish"}>
+              {actionLoading === "publish" ? "发布中..." : "发布活动"}
+            </Button>
+          </>
+        )}
+        {event?.status === "published" && !event.circle_id && (
+          <Button variant="outline" onClick={handleSyncClawdchat} disabled={actionLoading === "sync"}>
+            {actionLoading === "sync" ? "同步中..." : "同步到虾聊"}
           </Button>
         )}
         {event && (
@@ -465,6 +588,94 @@ export default function ManagePage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Check-in Scanner & Staff Link */}
+      {event?.status === "published" && (
+        <div className="mb-6">
+          <button
+            onClick={() => { setShowCheckin(!showCheckin); setScanResult(null); }}
+            className="text-sm font-medium text-primary hover:underline"
+          >
+            {showCheckin ? "收起" : "展开"}签到管理
+          </button>
+          {showCheckin && (
+            <div className="mt-3 space-y-3">
+              {/* Staff check-in link */}
+              <Card>
+                <CardContent className="p-4 space-y-3">
+                  <p className="text-sm font-medium">工作人员签到链接</p>
+                  <p className="text-xs text-muted-foreground">
+                    生成链接发给工作人员，无需登录即可用手机扫码签到
+                  </p>
+                  {checkinKey ? (
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
+                        <Input
+                          readOnly
+                          value={getStaffCheckinUrl()}
+                          className="text-xs bg-muted flex-1"
+                          onFocus={(e) => e.target.select()}
+                        />
+                        <Button size="sm" variant="outline" onClick={copyCheckinLink}>
+                          {copied ? "已复制" : "复制"}
+                        </Button>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={handleGenerateCheckinKey}
+                          disabled={checkinKeyLoading}
+                        >
+                          重新生成
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-destructive"
+                          onClick={handleRevokeCheckinKey}
+                          disabled={checkinKeyLoading}
+                        >
+                          废弃链接
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <Button
+                      size="sm"
+                      onClick={handleGenerateCheckinKey}
+                      disabled={checkinKeyLoading}
+                    >
+                      {checkinKeyLoading ? "生成中..." : "生成签到链接"}
+                    </Button>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Host self-scan */}
+              <Card>
+                <CardContent className="p-4 space-y-3">
+                  <p className="text-sm font-medium">主办方扫码</p>
+                  <p className="text-xs text-muted-foreground">
+                    用手机摄像头扫描参会者的签到二维码
+                  </p>
+                  <QrScanner
+                    onScan={(text) => handleScanCheckin(text)}
+                    paused={scanLoading}
+                  />
+                  {scanResult && (
+                    <div className={`rounded-lg p-3 text-center text-sm font-medium ${
+                      scanResult.ok ? "bg-green-50 text-green-700" : "bg-red-50 text-destructive"
+                    }`}>
+                      {scanResult.message}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Blast Notification */}
       <div className="mb-6">
@@ -862,6 +1073,16 @@ export default function ManagePage() {
                             拒绝
                           </Button>
                         </>
+                      )}
+                      {reg.status === "approved" && !reg.checked_in_at && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleScanCheckin(reg.qr_code_token)}
+                          disabled={scanLoading}
+                        >
+                          签到
+                        </Button>
                       )}
                     </div>
                   </div>

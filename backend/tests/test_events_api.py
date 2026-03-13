@@ -462,3 +462,130 @@ async def test_checkin_scan_unauthorized_user(client: AsyncClient):
             "qr_token": qr_token,
         }, cookies=random_cookies)
         assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Shared check-in key tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_checkin_key_flow(client: AsyncClient):
+    """Generate key → scan-by-key succeeds → revoke key → scan-by-key fails."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        # Host login
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000030",
+            "code": "123456",
+        })
+        host_cookies = {"events_token": resp.cookies.get("events_token")}
+
+        # Create + publish event
+        resp = await client.post("/api/v1/events", json={
+            "title": "Checkin Key Test Event",
+            "start_time": "2026-12-01T10:00:00+08:00",
+        }, cookies=host_cookies)
+        assert resp.status_code == 201
+        event_id = resp.json()["data"]["id"]
+        slug = resp.json()["data"]["slug"]
+
+        with patch("app.api.v1.events._create_event_circle", new_callable=AsyncMock) as m:
+            m.return_value = None
+            await client.post(f"/api/v1/events/{event_id}/publish", cookies=host_cookies)
+
+        # Register
+        resp = await client.post(f"/api/v1/events/{slug}/register", json={
+            "phone": "13800000030",
+        }, cookies=host_cookies)
+        assert resp.status_code == 201
+        qr_token = resp.json()["data"]["qr_code_token"]
+
+        # No key yet
+        resp = await client.get(
+            f"/api/v1/host/events/{event_id}/checkin-key", cookies=host_cookies
+        )
+        assert resp.json()["data"]["checkin_key"] is None
+
+        # Generate key
+        resp = await client.post(
+            f"/api/v1/host/events/{event_id}/checkin-key", cookies=host_cookies
+        )
+        assert resp.status_code == 200
+        key = resp.json()["data"]["checkin_key"]
+        assert key is not None
+
+        # scan-by-key (no login needed)
+        resp = await client.post("/api/v1/checkin/scan-by-key", json={
+            "qr_token": qr_token,
+            "checkin_key": key,
+        })
+        assert resp.status_code == 200
+        assert "签到成功" in resp.json()["data"]["message"]
+
+        # Revoke key
+        resp = await client.delete(
+            f"/api/v1/host/events/{event_id}/checkin-key", cookies=host_cookies
+        )
+        assert resp.status_code == 200
+
+        # scan-by-key should now fail
+        resp = await client.post("/api/v1/checkin/scan-by-key", json={
+            "qr_token": qr_token,
+            "checkin_key": key,
+        })
+        assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_scan_by_key_wrong_event(client: AsyncClient):
+    """scan-by-key rejects QR codes from a different event."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000031",
+            "code": "123456",
+        })
+        host_cookies = {"events_token": resp.cookies.get("events_token")}
+
+        # Event A with key
+        resp = await client.post("/api/v1/events", json={
+            "title": "Key Event A",
+            "start_time": "2026-12-02T10:00:00+08:00",
+        }, cookies=host_cookies)
+        event_a_id = resp.json()["data"]["id"]
+
+        with patch("app.api.v1.events._create_event_circle", new_callable=AsyncMock) as m:
+            m.return_value = None
+            await client.post(f"/api/v1/events/{event_a_id}/publish", cookies=host_cookies)
+
+        resp = await client.post(
+            f"/api/v1/host/events/{event_a_id}/checkin-key", cookies=host_cookies
+        )
+        key_a = resp.json()["data"]["checkin_key"]
+
+        # Event B with a registration
+        resp = await client.post("/api/v1/events", json={
+            "title": "Key Event B",
+            "start_time": "2026-12-03T10:00:00+08:00",
+        }, cookies=host_cookies)
+        event_b_id = resp.json()["data"]["id"]
+        slug_b = resp.json()["data"]["slug"]
+
+        with patch("app.api.v1.events._create_event_circle", new_callable=AsyncMock) as m:
+            m.return_value = None
+            await client.post(f"/api/v1/events/{event_b_id}/publish", cookies=host_cookies)
+
+        resp = await client.post(f"/api/v1/events/{slug_b}/register", json={
+            "phone": "13800000031",
+        }, cookies=host_cookies)
+        qr_token_b = resp.json()["data"]["qr_code_token"]
+
+        # Try to use event A's key to scan event B's code
+        resp = await client.post("/api/v1/checkin/scan-by-key", json={
+            "qr_token": qr_token_b,
+            "checkin_key": key_a,
+        })
+        assert resp.status_code == 400
+        assert "不属于当前活动" in resp.json()["detail"]

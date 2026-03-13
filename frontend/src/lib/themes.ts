@@ -14,7 +14,8 @@ function svgPattern(svg: string): string {
 const wave = (color: string) =>
   `<svg width="200" height="200" xmlns="http://www.w3.org/2000/svg"><path d="M0 80c40-20 60 20 100 0s60-20 100 0v120H0z" fill="${color}" opacity="0.15"/><path d="M0 120c40-15 60 15 100 0s60-15 100 0v80H0z" fill="${color}" opacity="0.1"/></svg>`;
 
-const circles = (color: string) =>
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _circles = (color: string) =>
   `<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="8" fill="${color}" opacity="0.12"/><circle cx="70" cy="50" r="5" fill="${color}" opacity="0.08"/><circle cx="40" cy="80" r="10" fill="${color}" opacity="0.1"/><circle cx="85" cy="15" r="6" fill="${color}" opacity="0.09"/></svg>`;
 
 const dots = (color: string) =>
@@ -173,13 +174,13 @@ export function getCoverStyle(event: {
   cover_image_url?: string | null;
   theme?: Record<string, unknown> | null;
 }): React.CSSProperties {
+  const theme = getThemeForEvent(event);
+  const themeBg = getThemeCoverStyle(theme).background as string;
+
   if (event.cover_image_url) {
     return {
-      backgroundImage: `url(${event.cover_image_url})`,
-      backgroundSize: "cover",
-      backgroundPosition: "center",
+      background: `url("${event.cover_image_url}") center/cover no-repeat, ${themeBg}`,
     };
   }
-  const theme = getThemeForEvent(event);
-  return getThemeCoverStyle(theme);
+  return { background: themeBg };
 }

@@ -50,6 +50,7 @@ class Event(Base):
     host_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
 
     circle_id = Column(UUID(as_uuid=True), nullable=True)  # linked ClawdChat Circle (created via API)
+    checkin_key = Column(String(64), nullable=True, unique=True, index=True)  # shared key for staff check-in page (no login required)
     approval_rules = Column(JSON, nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)

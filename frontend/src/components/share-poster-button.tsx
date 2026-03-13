@@ -12,7 +12,25 @@ interface SharePosterButtonProps {
 
 export function SharePosterButton({ slug, title }: SharePosterButtonProps) {
   const [showPoster, setShowPoster] = useState(false);
-  const posterUrl = `${API}/api/v1/events/${slug}/poster`;
+  const [copied, setCopied] = useState(false);
+  const posterUrl = `${API}/api/v1/events/${slug}/poster?v=${Date.now()}`;
+  const eventUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/e/${slug}`;
+
+  async function handleForward() {
+    if (navigator.share) {
+      try {
+        await navigator.share({ title, text: `邀请你参加活动「${title}」`, url: eventUrl });
+        return;
+      } catch {
+        /* user cancelled or not supported */
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(`${title}\n${eventUrl}`);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* ignore */ }
+  }
 
   return (
     <>
@@ -36,11 +54,11 @@ export function SharePosterButton({ slug, title }: SharePosterButtonProps) {
             <div className="p-4 text-center border-b">
               <p className="font-medium text-sm text-gray-800">长按保存图片，微信扫码报名</p>
             </div>
-            <div className="flex justify-center p-2">
+            <div className="overflow-y-auto" style={{ maxHeight: "75vh" }}>
               <img
                 src={posterUrl}
                 alt={`${title} 活动海报`}
-                className="max-h-[70vh] w-auto"
+                className="w-full"
                 loading="eager"
               />
             </div>
@@ -52,6 +70,14 @@ export function SharePosterButton({ slug, title }: SharePosterButtonProps) {
                 onClick={() => setShowPoster(false)}
               >
                 关闭
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1"
+                onClick={handleForward}
+              >
+                {copied ? "已复制链接" : "转发"}
               </Button>
               <Button
                 size="sm"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
@@ -8,12 +8,25 @@ interface ImageUploadProps {
   value: string;
   onChange: (url: string) => void;
   className?: string;
+  /** When a theme is selected, pass its CSS style to render as cover preview */
+  themeStyle?: React.CSSProperties;
 }
 
-export function ImageUpload({ value, onChange, className }: ImageUploadProps) {
+export function ImageUpload({ value, onChange, className, themeStyle }: ImageUploadProps) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [localPreview, setLocalPreview] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!value) setLocalPreview("");
+  }, [value]);
+
+  useEffect(() => {
+    return () => {
+      if (localPreview) URL.revokeObjectURL(localPreview);
+    };
+  }, [localPreview]);
 
   async function handleFile(file: File) {
     if (!file.type.startsWith("image/")) {
@@ -25,6 +38,7 @@ export function ImageUpload({ value, onChange, className }: ImageUploadProps) {
       return;
     }
 
+    setLocalPreview(URL.createObjectURL(file));
     setUploading(true);
     setError("");
 
@@ -42,20 +56,25 @@ export function ImageUpload({ value, onChange, className }: ImageUploadProps) {
         onChange(data.url);
       } else {
         setError(data.detail || "上传失败");
+        setLocalPreview("");
       }
     } catch {
       setError("上传失败，请重试");
+      setLocalPreview("");
     } finally {
       setUploading(false);
     }
   }
 
+  const previewSrc = localPreview || value;
+  const hasThemeBg = !previewSrc && !!themeStyle;
+
   return (
     <div className={className}>
       <label className="text-sm font-medium">活动封面</label>
       <div
-        className="mt-1.5 relative flex items-center justify-center rounded-xl border-2 border-dashed cursor-pointer overflow-hidden transition-colors hover:border-primary/50"
-        style={{ height: 200 }}
+        className={`mt-1.5 relative flex items-center justify-center rounded-xl border-2 border-dashed cursor-pointer overflow-hidden transition-colors hover:border-primary/50`}
+        style={{ height: 200, ...(hasThemeBg ? themeStyle : {}) }}
         onClick={() => inputRef.current?.click()}
         onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
         onDrop={(e) => {
@@ -65,17 +84,31 @@ export function ImageUpload({ value, onChange, className }: ImageUploadProps) {
           if (file) handleFile(file);
         }}
       >
-        {value ? (
+        {previewSrc ? (
           <>
             <img
-              src={value}
+              src={previewSrc}
               alt="封面预览"
               className="absolute inset-0 h-full w-full object-cover"
+              onError={() => {
+                if (!localPreview && value) setError("图片加载失败，请重新上传");
+              }}
             />
+            {uploading && (
+              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                <span className="text-white text-sm font-medium">上传中...</span>
+              </div>
+            )}
             <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
               <span className="text-white text-sm font-medium">点击更换封面</span>
             </div>
           </>
+        ) : hasThemeBg ? (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="opacity-0 hover:opacity-100 transition-opacity absolute inset-0 bg-black/20 flex items-center justify-center">
+              <span className="text-white text-sm font-medium">点击上传自定义封面</span>
+            </div>
+          </div>
         ) : (
           <div className="text-center text-muted-foreground">
             {uploading ? (

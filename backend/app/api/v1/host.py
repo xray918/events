@@ -2,6 +2,7 @@
 
 import csv
 import io
+import secrets
 from typing import Optional
 from uuid import UUID
 
@@ -647,3 +648,44 @@ async def remove_cohost(
         raise HTTPException(status_code=404, detail="联合主办方不存在")
     await db.delete(ch)
     return {"success": True, "message": "已移除"}
+
+
+# ---------------------------------------------------------------------------
+# Check-in Key (shared staff check-in link)
+# ---------------------------------------------------------------------------
+
+@router.post("/events/{event_id}/checkin-key")
+async def generate_checkin_key(
+    event_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate or rotate the shared check-in key for staff scanning."""
+    event = await _require_host(user, event_id, db)
+    event.checkin_key = secrets.token_urlsafe(32)
+    await db.flush()
+    return {"success": True, "data": {"checkin_key": event.checkin_key}}
+
+
+@router.delete("/events/{event_id}/checkin-key")
+async def revoke_checkin_key(
+    event_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke the check-in key (all shared links become invalid)."""
+    event = await _require_host(user, event_id, db)
+    event.checkin_key = None
+    await db.flush()
+    return {"success": True, "message": "签到链接已失效"}
+
+
+@router.get("/events/{event_id}/checkin-key")
+async def get_checkin_key(
+    event_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get current check-in key (host only)."""
+    event = await _require_host(user, event_id, db)
+    return {"success": True, "data": {"checkin_key": event.checkin_key}}

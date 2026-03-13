@@ -86,6 +86,7 @@ export default async function EventDetailPage({
           eventId={event.id}
           eventStatus={event.status}
           hostId={event.host?.id || ""}
+          circleId={event.circle_id}
         />
 
         {/* Title & Meta — 有封面时显示在图片下方 */}

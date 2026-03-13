@@ -4,11 +4,12 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { useRequireAuth } from "@/hooks/use-require-auth";
 import { ImageUpload } from "@/components/image-upload";
+import { DescriptionEditor } from "@/components/description-editor";
 import { QuestionConfigurator, QuestionDraft } from "@/components/question-configurator";
 import { ThemePicker } from "@/components/theme-picker";
+import { getThemeById, getThemeCoverStyle } from "@/lib/themes";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
@@ -37,6 +38,7 @@ export default function CreateEventPage() {
     reg_deadline_time: "23:59",
     require_approval: false,
     notify_on_register: false,
+    allow_self_checkin: true,
   });
 
   function update(field: string, value: string | boolean) {
@@ -119,6 +121,7 @@ export default function CreateEventPage() {
             : null,
           require_approval: form.require_approval,
           notify_on_register: form.notify_on_register,
+          allow_self_checkin: form.allow_self_checkin,
           theme: themePreset ? { preset: themePreset } : {},
           custom_questions: customQuestions.filter((q) => q.question_text.trim()).length > 0
             ? customQuestions
@@ -155,6 +158,7 @@ export default function CreateEventPage() {
         <ImageUpload
           value={form.cover_image_url}
           onChange={(url) => { update("cover_image_url", url); if (url) setThemePreset(""); }}
+          themeStyle={themePreset ? getThemeCoverStyle(getThemeById(themePreset)!) : undefined}
         />
 
         {/* Theme Picker */}
@@ -177,31 +181,12 @@ export default function CreateEventPage() {
         </div>
 
         {/* Description */}
-        <div>
-          <div className="flex items-center justify-between">
-            <label className="text-sm font-medium">活动描述</label>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleAIGenerate}
-              disabled={aiLoading}
-              className="text-xs"
-            >
-              {aiLoading ? "AI 生成中..." : "✨ AI 生成"}
-            </Button>
-          </div>
-          <Textarea
-            value={form.description}
-            onChange={(e) => update("description", e.target.value)}
-            placeholder="详细介绍你的活动...（支持 Markdown 格式）"
-            rows={8}
-            className="mt-1.5 font-mono text-sm"
-          />
-          <p className="mt-1 text-xs text-muted-foreground">
-            支持 Markdown 格式：**加粗**、- 列表、![图片](url) 等
-          </p>
-        </div>
+        <DescriptionEditor
+          value={form.description}
+          onChange={(v) => update("description", v)}
+          onAIGenerate={handleAIGenerate}
+          aiLoading={aiLoading}
+        />
 
         {/* Type */}
         <div>
@@ -230,25 +215,32 @@ export default function CreateEventPage() {
 
         {/* Location */}
         {(form.event_type === "in_person" || form.event_type === "hybrid") && (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="text-sm font-medium">地点名称</label>
-              <Input
-                value={form.location_name}
-                onChange={(e) => update("location_name", e.target.value)}
-                placeholder="如：虾聊总部"
-                className="mt-1.5"
-              />
+          <div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="text-sm font-medium">地点名称</label>
+                <Input
+                  value={form.location_name}
+                  onChange={(e) => update("location_name", e.target.value)}
+                  placeholder="如：虾聊总部"
+                  className="mt-1.5"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium">详细地址</label>
+                <Input
+                  value={form.location_address}
+                  onChange={(e) => update("location_address", e.target.value)}
+                  placeholder="如：上海市浦东新区张杨路500号5楼"
+                  className="mt-1.5"
+                />
+              </div>
             </div>
-            <div>
-              <label className="text-sm font-medium">详细地址</label>
-              <Input
-                value={form.location_address}
-                onChange={(e) => update("location_address", e.target.value)}
-                placeholder="如：上海市浦东新区..."
-                className="mt-1.5"
-              />
-            </div>
+            {form.require_approval && (
+              <p className="mt-1.5 text-xs text-amber-600">
+                🔒 开启审批后，详细地址仅对审批通过的报名者可见，其他用户只能看到大致位置。请填写精确到门牌号的完整地址。
+              </p>
+            )}
           </div>
         )}
 
@@ -360,6 +352,15 @@ export default function CreateEventPage() {
                 className="h-4 w-4 rounded border-input"
               />
               <span className="text-sm font-medium">有人报名时通知我</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.allow_self_checkin}
+                onChange={(e) => update("allow_self_checkin", e.target.checked)}
+                className="h-4 w-4 rounded border-input"
+              />
+              <span className="text-sm font-medium">允许自助签到</span>
             </label>
           </div>
         </div>
