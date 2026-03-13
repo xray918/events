@@ -1,5 +1,6 @@
 #!/bin/bash
-# Events 生产环境启动脚本
+# Events 生产环境启动脚本（近零停机部署）
+# 策略：先装依赖+构建，最后一步才杀旧起新，最小化服务中断
 # 用法: ./scripts/start.sh
 
 set -e
@@ -21,7 +22,7 @@ check_command() {
         echo "❌ $1 未安装"
         return 1
     fi
-    echo "✅ $1 已安装: $(command -v $1)"
+    echo "  ✅ $1"
 }
 
 echo ""
@@ -32,13 +33,35 @@ check_command npm
 check_command nginx
 
 # ---------------------------------------------------------------------------
-# 2. 停止旧进程
+# 2. 预装依赖 + 构建（旧服务仍在运行，用户无感）
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "🛑 停止旧进程..."
+echo "📦 [准备阶段] 安装后端依赖..."
+cd "$BACKEND_DIR"
+cp -f .env.production .env
+uv sync 2>&1 | tail -3
 
-# 后端
+echo ""
+echo "📦 [准备阶段] 安装前端依赖..."
+cd "$FRONTEND_DIR"
+cp -f .env.production .env.local
+npm ci --production=false 2>&1 | tail -3
+
+echo ""
+echo "🔨 [准备阶段] 构建前端..."
+npm run build 2>&1 | tail -5
+
+echo ""
+echo "✅ 准备完成，开始切换（停旧启新）..."
+echo ""
+
+# ---------------------------------------------------------------------------
+# 3. 停旧启新（这里才中断服务，尽快完成）
+# ---------------------------------------------------------------------------
+
+# --- 停止旧后端 ---
+echo "🛑 停止旧进程..."
 if [ -f /tmp/events-backend.pid ]; then
     OLD_PID=$(cat /tmp/events-backend.pid)
     if kill -0 "$OLD_PID" 2>/dev/null; then
@@ -47,7 +70,6 @@ if [ -f /tmp/events-backend.pid ]; then
     rm -f /tmp/events-backend.pid
 fi
 
-# 前端
 if [ -f /tmp/events-frontend.pid ]; then
     OLD_PID=$(cat /tmp/events-frontend.pid)
     if kill -0 "$OLD_PID" 2>/dev/null; then
@@ -56,32 +78,19 @@ if [ -f /tmp/events-frontend.pid ]; then
     rm -f /tmp/events-frontend.pid
 fi
 
-# 兜底：按端口杀
 lsof -ti:8001 2>/dev/null | xargs -r kill -9 2>/dev/null || true
 lsof -ti:3001 2>/dev/null | xargs -r kill -9 2>/dev/null || true
-
 sleep 1
 
-# ---------------------------------------------------------------------------
-# 3. 后端
-# ---------------------------------------------------------------------------
-
+# --- 立即启动新后端 ---
 echo ""
-echo "📦 安装后端依赖..."
-cd "$BACKEND_DIR"
-
-# 使用生产环境配置
-cp -f .env.production .env
-
-uv sync 2>&1 | tail -3
-
 echo "🚀 启动后端 (端口 8001)..."
+cd "$BACKEND_DIR"
 nohup uv run uvicorn main:app --host 0.0.0.0 --port 8001 --workers 2 \
     > /tmp/events-backend.log 2>&1 &
 echo $! > /tmp/events-backend.pid
 echo "  PID: $(cat /tmp/events-backend.pid)"
 
-# 等待后端就绪
 echo -n "  等待后端启动"
 for i in $(seq 1 15); do
     if curl -s http://127.0.0.1:8001/health > /dev/null 2>&1; then
@@ -92,29 +101,15 @@ for i in $(seq 1 15); do
     sleep 1
 done
 
-# ---------------------------------------------------------------------------
-# 4. 前端
-# ---------------------------------------------------------------------------
-
+# --- 立即启动新前端（已构建好，秒启动） ---
 echo ""
-echo "📦 安装前端依赖..."
-cd "$FRONTEND_DIR"
-
-# 使用生产环境配置
-cp -f .env.production .env.local
-
-npm ci --production=false 2>&1 | tail -3
-
-echo "🔨 构建前端..."
-npm run build 2>&1 | tail -5
-
 echo "🚀 启动前端 (端口 3001)..."
+cd "$FRONTEND_DIR"
 nohup npm start -- -p 3001 \
     > /tmp/events-frontend.log 2>&1 &
 echo $! > /tmp/events-frontend.pid
 echo "  PID: $(cat /tmp/events-frontend.pid)"
 
-# 等待前端就绪
 echo -n "  等待前端启动"
 for i in $(seq 1 15); do
     if curl -s http://127.0.0.1:3001/ > /dev/null 2>&1; then
@@ -126,7 +121,7 @@ for i in $(seq 1 15); do
 done
 
 # ---------------------------------------------------------------------------
-# 5. Nginx
+# 4. Nginx
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -138,7 +133,7 @@ nginx -s reload 2>/dev/null || systemctl reload nginx
 echo "  Nginx 已重载"
 
 # ---------------------------------------------------------------------------
-# 6. 验证
+# 5. 验证
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -154,6 +149,5 @@ echo "  后端: tail -f /tmp/events-backend.log"
 echo "  前端: tail -f /tmp/events-frontend.log"
 echo "=================================="
 
-# 验证服务
 curl -s http://127.0.0.1:8001/health && echo ""
 curl -s http://127.0.0.1:3001/ > /dev/null && echo "前端 OK" || echo "前端启动中..."

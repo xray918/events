@@ -83,7 +83,10 @@ async def phone_login(
     if not await verify_code(phone, data.code.strip()):
         raise HTTPException(status_code=400, detail="验证码错误或已过期")
 
-    result = await db.execute(select(User).where(User.phone == phone))
+    # 只匹配手机号注册的账号，不匹配 Google 用户绑定的通知手机号
+    result = await db.execute(
+        select(User).where(User.phone == phone, User.google_id.is_(None))
+    )
     user = result.scalar_one_or_none()
 
     if not user:

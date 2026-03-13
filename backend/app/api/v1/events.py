@@ -14,7 +14,7 @@ from app.db import get_db
 from app.models.clawdchat import Agent, User
 from app.models.event import (
     Event, EventCustomQuestion, EventRegistration, EventStaff,
-    EventWinner, EventRanking, EventBlast, EventBlastLog,
+    EventWinner, EventRanking, EventBlast, EventBlastLog, EventCoHost,
 )
 from app.schemas.event import EventCreate, EventUpdate, EventResponse, EventListResponse, RegisterRequest
 from app.core.deps import get_current_user, get_optional_agent, get_optional_user
@@ -27,6 +27,39 @@ router = APIRouter()
 
 async def _create_event_circle(event_title, event_description, event_slug, agent_api_key=None):
     return await _publish_to_clawdchat(event_title, event_description, event_slug, agent_api_key)
+
+
+async def _notify_registrant_confirmation(reg, event_title: str, reg_status: str, db):
+    """Send confirmation to the registrant via SMS + A2A after successful registration."""
+    from app.services.sms import send_sms
+    from app.core.config import settings
+
+    status_msg = {
+        "approved": "报名成功",
+        "pending": "报名已提交，等待审批",
+        "waitlisted": "已加入候补",
+    }.get(reg_status, "报名已提交")
+
+    if reg.phone:
+        try:
+            await send_sms(
+                phone=reg.phone,
+                template_code=settings.sms_template_code,
+                template_params={"event": event_title[:20], "status": status_msg[:10]},
+            )
+        except Exception:
+            pass
+
+    if reg.user_id:
+        from app.services.notify import _notify_user_agents_via_a2a
+        try:
+            await _notify_user_agents_via_a2a(
+                user_id=reg.user_id,
+                message=f"你已报名活动「{event_title}」，状态：{status_msg}。",
+                db=db,
+            )
+        except Exception:
+            pass
 
 
 async def _notify_host_new_registration(event, registrant, reg_status: str):
@@ -124,14 +157,34 @@ def _build_event_response(event: Event, mask_address: bool = False) -> dict:
         ]
 
     reg_count = 0
+    attendees_preview = []
     if event.registrations:
-        reg_count = len([r for r in event.registrations if r.status in ("approved", "pending")])
+        approved_regs = [r for r in event.registrations if r.status == "approved"]
+        pending_regs = [r for r in event.registrations if r.status == "pending"]
+        reg_count = len(approved_regs) + len(pending_regs)
+        for r in approved_regs[:12]:
+            if r.user:
+                attendees_preview.append({
+                    "nickname": r.user.nickname,
+                    "avatar_url": r.user.avatar_url,
+                })
 
     loc_address = event.location_address
     address_masked = False
     if mask_address and loc_address:
         loc_address = _mask_address(loc_address)
         address_masked = True
+
+    cohosts_info = None
+    if event.cohosts:
+        cohosts_info = [
+            {
+                "id": str(ch.user.id),
+                "nickname": ch.user.nickname,
+                "avatar_url": ch.user.avatar_url,
+            }
+            for ch in event.cohosts if ch.user
+        ]
 
     return {
         "id": event.id,
@@ -155,9 +208,11 @@ def _build_event_response(event: Event, mask_address: bool = False) -> dict:
         "status": event.status,
         "theme": event.theme,
         "host": host_info,
+        "cohosts": cohosts_info,
         "circle_id": event.circle_id,
         "custom_questions": questions,
         "registration_count": reg_count,
+        "attendees_preview": attendees_preview,
         "created_at": event.created_at,
         "updated_at": event.updated_at,
     }
@@ -291,7 +346,8 @@ async def get_event(
         .options(
             selectinload(Event.host),
             selectinload(Event.custom_questions),
-            selectinload(Event.registrations),
+            selectinload(Event.registrations).selectinload(EventRegistration.user),
+            selectinload(Event.cohosts).selectinload(EventCoHost.user),
         )
         .where(where_clause)
     )
@@ -458,6 +514,84 @@ async def update_event(
     event = result2.scalar_one()
 
     return {"success": True, "data": _build_event_response(event)}
+
+
+# ---------------------------------------------------------------------------
+# Clone event
+# ---------------------------------------------------------------------------
+
+@router.post("/{event_id}/clone", status_code=status.HTTP_201_CREATED)
+async def clone_event(
+    event_id: str,
+    user: Optional[User] = Depends(get_optional_user),
+    agent: Optional[Agent] = Depends(get_optional_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clone an existing event as a new draft. Copies settings and questions, not registrations."""
+    if not user and not agent:
+        raise HTTPException(status_code=401, detail="请先登录")
+
+    result = await db.execute(
+        select(Event)
+        .options(selectinload(Event.custom_questions))
+        .where(Event.id == event_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="活动不存在")
+
+    caller_id = user.id if user else agent.owner_id
+    if source.host_id != caller_id:
+        raise HTTPException(status_code=403, detail="只能克隆自己创建的活动")
+
+    new_slug = await _ensure_unique_slug(db, _slugify(source.title))
+
+    clone = Event(
+        title=source.title,
+        slug=new_slug,
+        description=source.description,
+        cover_image_url=source.cover_image_url,
+        event_type=source.event_type,
+        location_name=source.location_name,
+        location_address=source.location_address,
+        online_url=source.online_url,
+        start_time=source.start_time,
+        end_time=source.end_time,
+        timezone=source.timezone,
+        capacity=source.capacity,
+        registration_deadline=None,
+        visibility=source.visibility,
+        require_approval=source.require_approval,
+        notify_on_register=source.notify_on_register,
+        theme=source.theme or {},
+        host_id=caller_id,
+        approval_rules=source.approval_rules,
+        status="draft",
+    )
+    db.add(clone)
+    await db.flush()
+
+    if source.custom_questions:
+        for i, q in enumerate(source.custom_questions):
+            db.add(EventCustomQuestion(
+                event_id=clone.id,
+                question_text=q.question_text,
+                question_type=q.question_type,
+                options=q.options,
+                is_required=q.is_required,
+                sort_order=i,
+            ))
+
+    await db.commit()
+
+    result2 = await db.execute(
+        select(Event)
+        .options(selectinload(Event.host), selectinload(Event.custom_questions), selectinload(Event.registrations))
+        .where(Event.id == clone.id)
+    )
+    clone = result2.scalar_one()
+
+    return {"success": True, "data": _build_event_response(clone)}
 
 
 # ---------------------------------------------------------------------------
@@ -672,12 +806,21 @@ async def register_for_event(
     db.add(reg)
     await db.flush()
 
+    import logging
+    _log = logging.getLogger(__name__)
+
+    # Notify the registrant (confirmation)
+    try:
+        await _notify_registrant_confirmation(reg, event.title, reg_status, db)
+    except Exception as e:
+        _log.warning(f"Registration confirmation notification failed: {e}")
+
+    # Notify the host (if opted in)
     if event.notify_on_register:
         try:
             await _notify_host_new_registration(event, owner, reg_status)
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Host notification failed: {e}")
+            _log.warning(f"Host notification failed: {e}")
 
     return {
         "success": True,
@@ -792,6 +935,102 @@ async def generate_description(
     if result is None:
         raise HTTPException(status_code=500, detail="AI 描述生成失败，请稍后重试")
     return {"success": True, "description": result}
+
+
+# ---------------------------------------------------------------------------
+# Post-event Feedback
+# ---------------------------------------------------------------------------
+
+class FeedbackRequest(BaseModel):
+    rating: int  # 1-5
+    comment: Optional[str] = None
+
+from app.models.event import EventFeedback
+
+
+@router.post("/{slug}/feedback", status_code=status.HTTP_201_CREATED)
+async def submit_feedback(
+    slug: str,
+    body: FeedbackRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Submit post-event feedback. Only approved registrants can leave feedback after event ends."""
+    if body.rating < 1 or body.rating > 5:
+        raise HTTPException(status_code=422, detail="评分 1-5")
+
+    result = await db.execute(
+        select(Event).options(selectinload(Event.registrations)).where(Event.slug == slug)
+    )
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="活动不存在")
+    if event.status not in ("completed",):
+        raise HTTPException(status_code=400, detail="活动尚未结束，暂不可评价")
+
+    reg = next(
+        (r for r in event.registrations if r.user_id == user.id and r.status == "approved"),
+        None,
+    )
+    if not reg:
+        raise HTTPException(status_code=403, detail="仅已通过的参会者可以评价")
+
+    existing = await db.execute(
+        select(EventFeedback).where(EventFeedback.event_id == event.id, EventFeedback.user_id == user.id)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="已提交过评价")
+
+    fb = EventFeedback(event_id=event.id, user_id=user.id, rating=body.rating, comment=body.comment)
+    db.add(fb)
+    await db.flush()
+
+    return {"success": True, "data": {"id": str(fb.id)}}
+
+
+@router.get("/{slug}/feedback")
+async def get_feedback(
+    slug: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all feedback for an event."""
+    result = await db.execute(select(Event).where(Event.slug == slug))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="活动不存在")
+
+    fb_result = await db.execute(
+        select(EventFeedback)
+        .options(selectinload(EventFeedback.user))
+        .where(EventFeedback.event_id == event.id)
+        .order_by(EventFeedback.created_at.desc())
+    )
+    feedbacks = fb_result.unique().scalars().all()
+
+    avg_rating = 0.0
+    if feedbacks:
+        avg_rating = round(sum(f.rating for f in feedbacks) / len(feedbacks), 1)
+
+    return {
+        "success": True,
+        "data": {
+            "avg_rating": avg_rating,
+            "count": len(feedbacks),
+            "items": [
+                {
+                    "id": str(f.id),
+                    "rating": f.rating,
+                    "comment": f.comment,
+                    "user": {
+                        "nickname": f.user.nickname if f.user else None,
+                        "avatar_url": f.user.avatar_url if f.user else None,
+                    },
+                    "created_at": f.created_at.isoformat() if f.created_at else None,
+                }
+                for f in feedbacks
+            ],
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

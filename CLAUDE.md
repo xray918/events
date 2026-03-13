@@ -75,10 +75,11 @@ cd backend && uv run python -m pytest tests/ -v
 
 共享 ClawdChat 的 PostgreSQL（47.243.182.151:5432/clawdchat）。
 
-新增表（10 张）:
+新增表（12 张）:
 - event_events, event_registrations, event_custom_questions
 - event_staff, event_rankings, event_winners
 - event_blasts, event_blast_logs
+- event_cohosts, event_feedbacks
 - sms_templates, sms_logs
 
 ## 认证体系
@@ -100,10 +101,14 @@ cd backend && uv run python -m pytest tests/ -v
 - `GET /api-docs/{section}` — API 详细文档
 
 ### 认证（User 或 Agent）
-- `POST /api/v1/events/{slug}/register` — 报名
+- `POST /api/v1/events/{slug}/register` — 报名（自动发确认通知）
 - `GET /api/v1/events/{slug}/registration` — 查看报名状态
 - `DELETE /api/v1/events/{slug}/registration` — 取消报名
 - `GET /api/v1/registrations/me` — 我的所有报名
+- `GET /api/v1/events/mine` — 我创建的全部活动
+- `POST /api/v1/events/{id}/clone` — 克隆活动
+- `POST /api/v1/events/{slug}/feedback` — 提交活动评价（仅 completed）
+- `GET /api/v1/events/{slug}/feedback` — 查看活动评价
 
 ### Host 管理（/api/v1/host/）
 - `GET /events/{id}/registrations` — 报名列表
@@ -112,6 +117,9 @@ cd backend && uv run python -m pytest tests/ -v
 - `GET /events/{id}/registrations/export` — CSV 导出
 - `POST /events/{id}/staff` — 指派 Staff Agent
 - `GET /events/{id}/staff` — Staff 列表
+- `POST /events/{id}/cohosts` — 添加联合主办方（按手机号）
+- `GET /events/{id}/cohosts` — 联合主办方列表
+- `DELETE /events/{id}/cohosts/{cid}` — 移除联合主办方
 
 ### Staff Agent（/api/v1/staff/）
 - `GET /events/{id}/registrations` — 查看报名
@@ -147,12 +155,18 @@ cd backend && uv run python -m pytest tests/ -v
 - **Circle 自动创建**: 发布活动时自动创建虾聊 Circle + 发帖
   - 人类发布 → EventsBot 创建 Circle（owner=EventsBot）
   - Agent 发布 → Agent 自己创建 Circle（owner=该 Agent，人类主人可协同管理）
-- **封面图上传**: OSS 存储，创建/编辑页支持拖拽上传
+- **活动主题系统**: 12 个预设主题（极光/日落/深海/森林/霓虹/极简/暖阳/星空/樱花/水墨/烈焰/冰川），渐变+SVG 图案，创建/编辑时可选，存入 `event.theme.preset`
+- **封面图上传**: OSS 存储，创建/编辑页支持拖拽上传（与主题二选一）
 - **Markdown 描述**: 支持标题/列表/图片/表格等富文本，AI 一键生成
 - **AI 描述生成**: OpenRouter LLM 根据活动信息生成 Markdown 格式描述
 - **地址隐私**: require_approval 活动，未通过用户只看到模糊地址
 - **分享海报**: Pillow 生成海报图（封面+标题+时间+QR码），微信可长按识别
 - **双通道通知**: SMS 给人类 + A2A 消息给 Agent
+- **报名确认通知**: 报名后自动发 SMS+A2A 确认
+- **克隆活动**: 一键从现有活动复制创建新草稿
+- **联合主办方**: 支持多个 co-host 显示在活动详情页
+- **参会者头像**: 活动页展示已报名用户头像（"谁要去"）
+- **活动评价**: 活动结束后参会者可提交星级评价+文字反馈
 - **Skill 文件**: 参会者和 Staff 各有专属 Skill
 - **QR 签到**: 生成码 + 扫码/自助签到
 

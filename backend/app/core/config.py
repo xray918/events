@@ -60,8 +60,11 @@ class Settings(BaseSettings):
     sms_template_code: str = ""
     sms_winner_template_code: str = ""
 
-    # Image upload (via ClawdChat file API)
+    # Image upload (Aliyun OSS)
     image_max_size_mb: int = 5
+    oss_endpoint: str = ""
+    oss_bucket_name: str = ""
+    oss_prefix: str = "events/"
 
     # OpenRouter LLM (for AI description generation)
     openrouter_api_base: str = "https://openrouter.ai/api/v1"

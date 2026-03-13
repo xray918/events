@@ -60,6 +60,7 @@ class Event(Base):
     registrations = relationship("EventRegistration", back_populates="event", cascade="all, delete-orphan", lazy="noload")
     staff_agents = relationship("EventStaff", back_populates="event", cascade="all, delete-orphan", lazy="noload")
     blasts = relationship("EventBlast", back_populates="event", cascade="all, delete-orphan", lazy="noload")
+    cohosts = relationship("EventCoHost", back_populates="event", cascade="all, delete-orphan", order_by="EventCoHost.display_order", lazy="noload")
 
     @property
     def is_published(self) -> bool:
@@ -137,6 +138,23 @@ class EventStaff(Base):
 
 
 # ---------------------------------------------------------------------------
+# Co-Hosts
+# ---------------------------------------------------------------------------
+
+class EventCoHost(Base):
+    __tablename__ = "event_cohosts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id = Column(UUID(as_uuid=True), ForeignKey("event_events.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    display_order = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    event = relationship("Event", back_populates="cohosts", lazy="noload")
+    user = relationship("User", foreign_keys=[user_id], lazy="noload")
+
+
+# ---------------------------------------------------------------------------
 # Ranking (snapshot of Circle engagement)
 # ---------------------------------------------------------------------------
 
@@ -206,6 +224,24 @@ class EventBlastLog(Base):
     status = Column(String(20), default="pending", nullable=False)  # pending / sent / failed
     error = Column(Text, nullable=True)
     sent_at = Column(DateTime(timezone=True), nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Post-event Feedback
+# ---------------------------------------------------------------------------
+
+class EventFeedback(Base):
+    __tablename__ = "event_feedbacks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id = Column(UUID(as_uuid=True), ForeignKey("event_events.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    rating = Column(Integer, nullable=False)  # 1-5
+    comment = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    event = relationship("Event", lazy="noload")
+    user = relationship("User", foreign_keys=[user_id], lazy="noload")
 
 
 # ---------------------------------------------------------------------------

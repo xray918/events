@@ -16,7 +16,7 @@ from app.core.deps import get_current_user
 from app.core.security import utc_now
 from app.db import get_db
 from app.models.clawdchat import Agent, User
-from app.models.event import Event, EventRegistration, EventStaff, EventWinner
+from app.models.event import Event, EventCoHost, EventRegistration, EventStaff, EventWinner
 from app.services.notify import notify_registration_approved
 
 router = APIRouter()
@@ -552,3 +552,98 @@ async def list_winners(
         })
 
     return {"success": True, "data": winner_data}
+
+
+# ---------------------------------------------------------------------------
+# Co-host management
+# ---------------------------------------------------------------------------
+
+class CoHostRequest(BaseModel):
+    phone: str
+
+
+@router.post("/events/{event_id}/cohosts")
+async def add_cohost(
+    event_id: UUID,
+    body: CoHostRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a co-host by phone number."""
+    await _require_host(user, event_id, db)
+
+    result = await db.execute(select(User).where(User.phone == body.phone))
+    cohost_user = result.scalar_one_or_none()
+    if not cohost_user:
+        raise HTTPException(status_code=404, detail="未找到该手机号对应的用户")
+
+    existing = await db.execute(
+        select(EventCoHost).where(EventCoHost.event_id == event_id, EventCoHost.user_id == cohost_user.id)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="该用户已是联合主办方")
+
+    max_order = await db.execute(
+        select(func.coalesce(func.max(EventCoHost.display_order), 0)).where(EventCoHost.event_id == event_id)
+    )
+    order = (max_order.scalar() or 0) + 1
+
+    ch = EventCoHost(event_id=event_id, user_id=cohost_user.id, display_order=order)
+    db.add(ch)
+    await db.flush()
+
+    return {
+        "success": True,
+        "data": {
+            "id": str(ch.id),
+            "user_id": str(cohost_user.id),
+            "nickname": cohost_user.nickname,
+            "avatar_url": cohost_user.avatar_url,
+        },
+    }
+
+
+@router.get("/events/{event_id}/cohosts")
+async def list_cohosts(
+    event_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_host(user, event_id, db)
+    result = await db.execute(
+        select(EventCoHost)
+        .options(selectinload(EventCoHost.user))
+        .where(EventCoHost.event_id == event_id)
+        .order_by(EventCoHost.display_order)
+    )
+    cohosts = result.unique().scalars().all()
+    return {
+        "success": True,
+        "data": [
+            {
+                "id": str(ch.id),
+                "user_id": str(ch.user.id) if ch.user else None,
+                "nickname": ch.user.nickname if ch.user else None,
+                "avatar_url": ch.user.avatar_url if ch.user else None,
+            }
+            for ch in cohosts
+        ],
+    }
+
+
+@router.delete("/events/{event_id}/cohosts/{cohost_id}")
+async def remove_cohost(
+    event_id: UUID,
+    cohost_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_host(user, event_id, db)
+    result = await db.execute(
+        select(EventCoHost).where(EventCoHost.id == cohost_id, EventCoHost.event_id == event_id)
+    )
+    ch = result.scalar_one_or_none()
+    if not ch:
+        raise HTTPException(status_code=404, detail="联合主办方不存在")
+    await db.delete(ch)
+    return {"success": True, "message": "已移除"}
