@@ -38,7 +38,8 @@ class Event(Base):
     end_time = Column(DateTime(timezone=True), nullable=True)
     timezone = Column(String(50), default="Asia/Shanghai", nullable=False)
 
-    capacity = Column(Integer, nullable=True)  # NULL = unlimited
+    capacity = Column(Integer, nullable=True)           # display-only: expected attendees / venue size
+    registration_limit = Column(Integer, nullable=True) # NULL = unlimited; controls when new registrations become waitlisted
     registration_deadline = Column(DateTime(timezone=True), nullable=True)  # NULL = no deadline
     visibility = Column(String(20), default="public", nullable=False)  # public / private
     require_approval = Column(Boolean, default=False, nullable=False)

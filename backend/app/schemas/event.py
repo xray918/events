@@ -37,6 +37,7 @@ class EventCreate(BaseModel):
     end_time: Optional[datetime] = None
     timezone: str = "Asia/Shanghai"
     capacity: Optional[int] = None
+    registration_limit: Optional[int] = None
     registration_deadline: Optional[datetime] = None
     visibility: str = "public"
     require_approval: bool = False
@@ -61,6 +62,7 @@ class EventUpdate(BaseModel):
     end_time: Optional[datetime] = None
     timezone: Optional[str] = None
     capacity: Optional[int] = None
+    registration_limit: Optional[int] = None
     registration_deadline: Optional[datetime] = None
     visibility: Optional[str] = None
     require_approval: Optional[bool] = None
@@ -85,6 +87,7 @@ class EventResponse(BaseModel):
     end_time: Optional[datetime] = None
     timezone: str
     capacity: Optional[int] = None
+    registration_limit: Optional[int] = None
     visibility: str
     require_approval: bool
     allow_self_checkin: bool = True

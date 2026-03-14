@@ -150,6 +150,9 @@ async def setup_test_database():
         await conn.execute(text(
             "ALTER TABLE event_events ADD COLUMN IF NOT EXISTS organizer_name VARCHAR(200)"
         ))
+        await conn.execute(text(
+            "ALTER TABLE event_events ADD COLUMN IF NOT EXISTS registration_limit INTEGER"
+        ))
 
     # ── PRE-TEST CLEANUP (guard against leftovers from a previous crashed run) ──
     await _truncate_test_tables(engine)

@@ -59,3 +59,6 @@ async def init_db():
         await conn.execute(text(
             "ALTER TABLE event_events ADD COLUMN IF NOT EXISTS organizer_name VARCHAR(200)"
         ))
+        await conn.execute(text(
+            "ALTER TABLE event_events ADD COLUMN IF NOT EXISTS registration_limit INTEGER"
+        ))
