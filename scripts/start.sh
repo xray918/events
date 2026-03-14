@@ -46,7 +46,19 @@ echo ""
 echo "📦 [准备阶段] 安装前端依赖..."
 cd "$FRONTEND_DIR"
 cp -f .env.production .env.local
-npm ci --production=false 2>&1 | tail -3
+
+# 只在 package-lock.json 变化时才重装依赖（避免每次 npm ci 删除 node_modules）
+LOCK_HASH=$(md5sum package-lock.json 2>/dev/null | cut -d' ' -f1 || echo "none")
+LOCK_HASH_FILE="/tmp/events-frontend-lock.md5"
+PREV_LOCK_HASH=$(cat "$LOCK_HASH_FILE" 2>/dev/null || echo "")
+
+if [ "$LOCK_HASH" != "$PREV_LOCK_HASH" ] || [ ! -d "node_modules" ]; then
+    echo "  依赖有变化，执行 npm install..."
+    npm install --production=false 2>&1 | tail -3
+    echo "$LOCK_HASH" > "$LOCK_HASH_FILE"
+else
+    echo "  依赖无变化，跳过安装 ✅"
+fi
 
 echo ""
 echo "🔨 [准备阶段] 构建前端..."
