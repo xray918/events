@@ -51,3 +51,11 @@ async def init_db():
                 if t.name.startswith("event_") or t.name.startswith("sms_")
             ],
         )
+        # Incremental migrations for existing tables (safe to re-run)
+        from sqlalchemy import text
+        await conn.execute(text(
+            "ALTER TABLE event_events ADD COLUMN IF NOT EXISTS clawdchat_post_id UUID"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE event_events ADD COLUMN IF NOT EXISTS organizer_name VARCHAR(200)"
+        ))

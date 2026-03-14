@@ -87,6 +87,37 @@ async def create_post(
     return None
 
 
+async def update_post(
+    post_id: str,
+    title: Optional[str] = None,
+    content: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[dict]:
+    """Update (PATCH) an existing ClawdChat post. Returns updated post data or None."""
+    key = api_key or settings.events_bot_api_key
+    if not key:
+        logger.warning("No API key for post update, skipping")
+        return None
+
+    body: dict = {}
+    if title:
+        body["title"] = title
+    if content:
+        body["content"] = content
+    if not body:
+        return None
+
+    result = await _call_api("PATCH", f"/posts/{post_id}", key, body)
+
+    if result["status"] == 200:
+        post = result["data"]
+        logger.info(f"Post {post_id} updated")
+        return post
+
+    logger.error(f"Failed to update post {post_id}: status={result['status']}, body={result['data']}")
+    return None
+
+
 async def archive_circle(
     circle_name: str,
     api_key: Optional[str] = None,
@@ -132,18 +163,35 @@ async def notify_event_cancelled(
     )
 
 
+def build_event_post_content(
+    event_title: str,
+    event_description: Optional[str],
+    event_slug: str,
+) -> tuple[str, str]:
+    """Build (title, content) for event announce post."""
+    event_url = f"{settings.frontend_url}/e/{event_slug}"
+    post_title = f"📢 活动发布：{event_title}"
+    post_content = (
+        f"📢 **{event_title}** 活动已发布！\n\n"
+        f"{event_description or ''}\n\n"
+        f"👉 报名链接：{event_url}\n\n"
+        f"欢迎参加，期待与你相见！"
+    )
+    return post_title, post_content
+
+
 async def publish_event_to_clawdchat(
     event_title: str,
     event_description: Optional[str],
     event_slug: str,
     agent_api_key: Optional[str] = None,
-) -> Optional[tuple[UUID, str]]:
+) -> Optional[tuple[UUID, str, Optional[UUID]]]:
     """Create a Circle + announce post for a published event.
 
     - If agent_api_key is provided (agent publishes), use that agent's key.
     - Otherwise (human publishes), use EventsBot's key.
 
-    Returns (circle_uuid, circle_name_slug) or None if creation failed.
+    Returns (circle_uuid, circle_name_slug, post_uuid) or None if creation failed.
     """
     api_key = agent_api_key or settings.events_bot_api_key
 
@@ -157,7 +205,6 @@ async def publish_event_to_clawdchat(
     circle = await create_circle(circle_display_name, circle_desc, api_key=api_key)
 
     if not circle:
-        # Name conflict — retry with slug suffix to guarantee uniqueness
         unique_name = f"🎉 {event_title} ({event_slug[-8:]})"
         circle = await create_circle(unique_name, circle_desc, api_key=api_key)
         if not circle:
@@ -167,23 +214,38 @@ async def publish_event_to_clawdchat(
     actual_circle_name = circle.get("name", circle_display_name)
 
     event_url = f"{settings.frontend_url}/e/{event_slug}"
-    post_content = (
-        f"📢 **{event_title}** 活动已发布！\n\n"
-        f"{event_description or ''}\n\n"
-        f"👉 报名链接：{event_url}\n\n"
-        f"欢迎参加，期待与你相见！"
-    )
+    post_title, post_content = build_event_post_content(event_title, event_description, event_slug)
 
-    await create_post(
+    post = await create_post(
         circle_name=actual_circle_name,
-        title=f"📢 活动发布：{event_title}",
+        title=post_title,
         content=post_content,
         url=event_url,
         api_key=api_key,
     )
 
+    post_id: Optional[UUID] = None
+    if post and post.get("id"):
+        try:
+            post_id = UUID(str(post["id"]))
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid post_id from ClawdChat: {post.get('id')}")
+
     try:
-        return UUID(str(circle_id)), actual_circle_name
+        return UUID(str(circle_id)), actual_circle_name, post_id
     except (ValueError, TypeError):
         logger.error(f"Invalid circle_id from ClawdChat: {circle_id}")
         return None
+
+
+async def sync_event_post_update(
+    post_id: str,
+    event_title: str,
+    event_description: Optional[str],
+    event_slug: str,
+    api_key: Optional[str] = None,
+) -> bool:
+    """Update the announce post when event content is edited. Returns True on success."""
+    new_title, new_content = build_event_post_content(event_title, event_description, event_slug)
+    result = await update_post(post_id, title=new_title, content=new_content, api_key=api_key)
+    return result is not None

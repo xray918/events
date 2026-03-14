@@ -263,7 +263,21 @@ export default async function EventDetailPage({
           <div className="flex items-center gap-3 flex-wrap">
             <span className="text-sm text-muted-foreground">主办</span>
             <div className="flex items-center gap-3 flex-wrap">
-              {[event.host, ...(event.cohosts || [])].map((h: { id: string; nickname: string; avatar_url: string | null }, i: number) => (
+              {/* 主办方：优先显示 organizer_name，其次 host.nickname */}
+              <div className="flex items-center gap-2">
+                {event.host.avatar_url ? (
+                  <img src={event.host.avatar_url} alt="" className="h-6 w-6 rounded-full" />
+                ) : (
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs">
+                    {(event.organizer_name || event.host.nickname || "?")[0]}
+                  </span>
+                )}
+                <span className="text-sm font-medium">
+                  {event.organizer_name || event.host.nickname}
+                </span>
+              </div>
+              {/* 联合主办 */}
+              {(event.cohosts || []).map((h: { id: string; nickname: string; avatar_url: string | null }, i: number) => (
                 <div key={h.id || i} className="flex items-center gap-2">
                   {h.avatar_url ? (
                     <img src={h.avatar_url} alt="" className="h-6 w-6 rounded-full" />

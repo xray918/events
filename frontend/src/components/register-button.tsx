@@ -40,6 +40,7 @@ export function RegisterButton({ slug, title = "", questions, eventStatus, regis
   const [checking, setChecking] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
+  const [otherTexts, setOtherTexts] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState("");
   const [result, setResult] = useState<{ success: boolean; message?: string } | null>(null);
   const [existingReg, setExistingReg] = useState<RegistrationInfo | null>(null);
@@ -279,6 +280,31 @@ export function RegisterButton({ slug, title = "", questions, eventStatus, regis
     });
   }
 
+  function isOtherOption(opt: string) {
+    return opt === "其他" || opt === "其他（请说明）";
+  }
+
+  function buildFinalAnswers() {
+    const final: Record<string, string | string[]> = {};
+    for (const [qId, val] of Object.entries(answers)) {
+      if (typeof val === "string" && isOtherOption(val)) {
+        const text = otherTexts[qId]?.trim();
+        final[qId] = text ? `其他：${text}` : val;
+      } else if (Array.isArray(val)) {
+        final[qId] = val.map((v) => {
+          if (isOtherOption(v)) {
+            const text = otherTexts[qId]?.trim();
+            return text ? `其他：${text}` : v;
+          }
+          return v;
+        });
+      } else {
+        final[qId] = val;
+      }
+    }
+    return final;
+  }
+
   function validateAndSubmit() {
     if (!questions) return;
     for (const q of questions) {
@@ -289,9 +315,18 @@ export function RegisterButton({ slug, title = "", questions, eventStatus, regis
           return;
         }
       }
+      // 选了"其他"但没填说明时提示
+      const val = answers[q.id];
+      const hasOtherSelected =
+        (typeof val === "string" && isOtherOption(val)) ||
+        (Array.isArray(val) && val.some(isOtherOption));
+      if (hasOtherSelected && !otherTexts[q.id]?.trim()) {
+        setFormError(`请填写「${q.question_text}」中「其他」的具体说明`);
+        return;
+      }
     }
     setFormError("");
-    doRegister(answers);
+    doRegister(buildFinalAnswers());
   }
 
   async function doRegister(customAnswers: Record<string, string | string[]>) {
@@ -512,17 +547,17 @@ export function RegisterButton({ slug, title = "", questions, eventStatus, regis
               <p className="text-xs text-muted-foreground mt-0.5">请填写以下信息完成报名</p>
             </div>
 
-            <div className="px-5 py-4 space-y-4 max-h-[60vh] overflow-y-auto">
+            <div className="px-5 py-4 space-y-5 max-h-[60vh] overflow-y-auto">
               {questions!.map((q) => (
                 <div key={q.id}>
-                  <label className="text-sm font-medium">
+                  <label className="text-base font-medium leading-snug">
                     {q.question_text}
                     {q.is_required && <span className="text-destructive ml-0.5">*</span>}
                   </label>
 
                   {q.question_type === "text" && (
                     <Input
-                      className="mt-1.5"
+                      className="mt-2"
                       placeholder="请输入..."
                       value={(answers[q.id] as string) || ""}
                       onChange={(e) => updateAnswer(q.id, e.target.value)}
@@ -530,35 +565,60 @@ export function RegisterButton({ slug, title = "", questions, eventStatus, regis
                   )}
 
                   {q.question_type === "select" && q.options && (
-                    <div className="mt-1.5 space-y-1.5">
+                    <div className="mt-2 space-y-1">
                       {q.options.map((opt) => (
-                        <label key={opt} className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="radio"
-                            name={`q-${q.id}`}
-                            checked={answers[q.id] === opt}
-                            onChange={() => updateAnswer(q.id, opt)}
-                            className="h-3.5 w-3.5"
-                          />
-                          <span className="text-sm">{opt}</span>
-                        </label>
+                        <div key={opt}>
+                          <label className="flex items-center gap-3 cursor-pointer py-2 px-1 rounded-lg active:bg-muted/60">
+                            <input
+                              type="radio"
+                              name={`q-${q.id}`}
+                              checked={answers[q.id] === opt}
+                              onChange={() => updateAnswer(q.id, opt)}
+                              className="h-5 w-5 shrink-0 accent-primary"
+                            />
+                            <span className="text-base">{opt}</span>
+                          </label>
+                          {isOtherOption(opt) && answers[q.id] === opt && (
+                            <Input
+                              className="mt-1.5 ml-8 text-base"
+                              placeholder="请说明..."
+                              value={otherTexts[q.id] || ""}
+                              onChange={(e) => setOtherTexts((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                              autoFocus
+                            />
+                          )}
+                        </div>
                       ))}
                     </div>
                   )}
 
                   {q.question_type === "multiselect" && q.options && (
-                    <div className="mt-1.5 space-y-1.5">
-                      {q.options.map((opt) => (
-                        <label key={opt} className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={((answers[q.id] as string[]) || []).includes(opt)}
-                            onChange={() => toggleMultiAnswer(q.id, opt)}
-                            className="h-3.5 w-3.5 rounded border-input"
-                          />
-                          <span className="text-sm">{opt}</span>
-                        </label>
-                      ))}
+                    <div className="mt-2 space-y-1">
+                      {q.options.map((opt) => {
+                        const isChecked = ((answers[q.id] as string[]) || []).includes(opt);
+                        return (
+                          <div key={opt}>
+                            <label className="flex items-center gap-3 cursor-pointer py-2 px-1 rounded-lg active:bg-muted/60">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => toggleMultiAnswer(q.id, opt)}
+                                className="h-5 w-5 shrink-0 rounded accent-primary"
+                              />
+                              <span className="text-base">{opt}</span>
+                            </label>
+                            {isOtherOption(opt) && isChecked && (
+                              <Input
+                                className="mt-1.5 ml-8 text-base"
+                                placeholder="请说明..."
+                                value={otherTexts[q.id] || ""}
+                                onChange={(e) => setOtherTexts((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                                autoFocus
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

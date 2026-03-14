@@ -4,7 +4,10 @@ import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from uuid import uuid4
 
-from app.services.clawdchat import create_circle, create_post, publish_event_to_clawdchat
+from app.services.clawdchat import (
+    create_circle, create_post, publish_event_to_clawdchat,
+    update_post, sync_event_post_update, build_event_post_content,
+)
 
 
 @pytest.fixture
@@ -106,8 +109,9 @@ async def test_create_post_with_custom_api_key(mock_settings):
 
 @pytest.mark.asyncio
 async def test_publish_event_to_clawdchat_full_flow(mock_settings):
-    """publish_event_to_clawdchat should create a circle and then post."""
+    """publish_event_to_clawdchat should create a circle and then post, returning (circle_id, name, post_id)."""
     circle_id = str(uuid4())
+    post_id = str(uuid4())
 
     circle_resp = MagicMock()
     circle_resp.status_code = 201
@@ -115,7 +119,7 @@ async def test_publish_event_to_clawdchat_full_flow(mock_settings):
 
     post_resp = MagicMock()
     post_resp.status_code = 201
-    post_resp.json.return_value = {"id": str(uuid4()), "title": "📢 活动发布：Hackathon"}
+    post_resp.json.return_value = {"id": post_id, "title": "📢 活动发布：Hackathon"}
 
     with patch("app.services.clawdchat.httpx.AsyncClient") as MockClient:
         mock_client = AsyncMock()
@@ -129,7 +133,10 @@ async def test_publish_event_to_clawdchat_full_flow(mock_settings):
             event_slug="hackathon-2026",
         )
         assert result is not None
-        assert str(result) == circle_id
+        assert len(result) == 3
+        assert str(result[0]) == circle_id
+        assert result[1] == "🎉 Hackathon"
+        assert str(result[2]) == post_id
         assert mock_client.request.call_count == 2
 
 
@@ -153,7 +160,7 @@ async def test_publish_event_to_clawdchat_circle_fails(mock_settings):
             event_slug="broken-event",
         )
         assert result is None
-        assert mock_client.request.call_count == 1
+        assert mock_client.request.call_count == 2  # initial + retry with slug suffix
 
 
 @pytest.mark.asyncio
@@ -186,3 +193,131 @@ async def test_publish_event_uses_agent_key_when_provided(mock_settings):
         for call in mock_client.request.call_args_list:
             auth_header = call.kwargs.get("headers", {}).get("Authorization", "")
             assert "clawdchat_agent_custom_key" in auth_header
+
+
+# ---------------------------------------------------------------------------
+# update_post tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_post_success(mock_settings):
+    post_id = str(uuid4())
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"id": post_id, "title": "Updated Title", "content": "New content"}
+
+    with patch("app.services.clawdchat.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_client.request.return_value = mock_response
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await update_post(post_id, title="Updated Title", content="New content")
+        assert result is not None
+        assert result["title"] == "Updated Title"
+
+        call_args = mock_client.request.call_args
+        assert call_args.args[0] == "PATCH"
+        assert post_id in call_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_update_post_no_api_key():
+    with patch("app.services.clawdchat.settings") as mock:
+        mock.events_bot_api_key = ""
+        result = await update_post("some-id", title="test", api_key=None)
+        assert result is None
+
+
+@pytest.mark.asyncio
+async def test_update_post_no_fields(mock_settings):
+    """If both title and content are None, should return None without making a request."""
+    result = await update_post("some-id")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_update_post_failure(mock_settings):
+    mock_response = MagicMock()
+    mock_response.status_code = 404
+    mock_response.json.return_value = {"detail": "帖子不存在"}
+    mock_response.text = '{"detail": "帖子不存在"}'
+
+    with patch("app.services.clawdchat.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_client.request.return_value = mock_response
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await update_post("nonexistent-id", title="test")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# sync_event_post_update tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_event_post_update_success(mock_settings):
+    """sync_event_post_update should call update_post with built content."""
+    post_id = str(uuid4())
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"id": post_id, "title": "updated"}
+
+    with patch("app.services.clawdchat.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_client.request.return_value = mock_response
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        ok = await sync_event_post_update(
+            post_id=post_id,
+            event_title="Updated Hackathon",
+            event_description="New description",
+            event_slug="hackathon-2026",
+        )
+        assert ok is True
+
+        call_args = mock_client.request.call_args
+        body = call_args.kwargs.get("json", {})
+        assert "Updated Hackathon" in body["title"]
+        assert "New description" in body["content"]
+
+
+@pytest.mark.asyncio
+async def test_sync_event_post_update_failure(mock_settings):
+    mock_response = MagicMock()
+    mock_response.status_code = 403
+    mock_response.json.return_value = {"detail": "forbidden"}
+    mock_response.text = '{"detail": "forbidden"}'
+
+    with patch("app.services.clawdchat.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_client.request.return_value = mock_response
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        ok = await sync_event_post_update(
+            post_id=str(uuid4()),
+            event_title="Test",
+            event_description=None,
+            event_slug="test",
+        )
+        assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# build_event_post_content tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_event_post_content(mock_settings):
+    title, content = build_event_post_content("Hackathon", "A fun event", "hack-2026")
+    assert title == "📢 活动发布：Hackathon"
+    assert "Hackathon" in content
+    assert "A fun event" in content
+    assert "hack-2026" in content

@@ -54,6 +54,15 @@ export function QuestionConfigurator({ value, onChange }: Props) {
     onChange(updated);
   }
 
+  function addOtherOption(qIdx: number) {
+    const updated = [...value];
+    const opts = updated[qIdx].options;
+    if (!opts.includes("其他（请说明）")) {
+      updated[qIdx] = { ...updated[qIdx], options: [...opts, "其他（请说明）"] };
+      onChange(updated);
+    }
+  }
+
   function updateOption(qIdx: number, optIdx: number, val: string) {
     const updated = [...value];
     const opts = [...updated[qIdx].options];
@@ -176,13 +185,24 @@ export function QuestionConfigurator({ value, onChange }: Props) {
                           </button>
                         </div>
                       ))}
-                      <button
-                        type="button"
-                        onClick={() => addOption(idx)}
-                        className="text-xs text-primary hover:underline pl-5"
-                      >
-                        + 添加选项
-                      </button>
+                      <div className="flex items-center gap-3 pl-5">
+                        <button
+                          type="button"
+                          onClick={() => addOption(idx)}
+                          className="text-xs text-primary hover:underline"
+                        >
+                          + 添加选项
+                        </button>
+                        {!q.options.includes("其他（请说明）") && (
+                          <button
+                            type="button"
+                            onClick={() => addOtherOption(idx)}
+                            className="text-xs text-muted-foreground hover:text-primary hover:underline"
+                          >
+                            + 其他选项
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>

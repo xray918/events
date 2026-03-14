@@ -26,6 +26,7 @@ class StaffAgentAssign(BaseModel):
 
 class EventCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
+    organizer_name: Optional[str] = Field(default=None, max_length=200)
     description: Optional[str] = None
     cover_image_url: Optional[str] = None
     event_type: str = "in_person"
@@ -49,6 +50,7 @@ class EventCreate(BaseModel):
 
 class EventUpdate(BaseModel):
     title: Optional[str] = None
+    organizer_name: Optional[str] = Field(default=None, max_length=200)
     description: Optional[str] = None
     cover_image_url: Optional[str] = None
     event_type: Optional[str] = None

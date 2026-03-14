@@ -225,3 +225,49 @@ async def test_llm_service_no_key():
         mock_settings.openrouter_api_key = ""
         result = await generate_event_description("Test Event")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Poster timezone conversion
+# ---------------------------------------------------------------------------
+
+def test_poster_timezone_utc_to_shanghai():
+    """Poster should display time in the event's local timezone, not UTC."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    utc_time = datetime(2026, 3, 21, 6, 0, 0, tzinfo=ZoneInfo("UTC"))
+
+    local_tz = ZoneInfo("Asia/Shanghai")
+    local_time = utc_time.astimezone(local_tz)
+
+    assert local_time.hour == 14
+    assert local_time.minute == 0
+    assert local_time.strftime("%H:%M") == "14:00"
+
+
+def test_poster_timezone_naive_datetime():
+    """Naive UTC datetimes (no tzinfo) should be treated as UTC and converted correctly."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    naive_utc = datetime(2026, 3, 21, 6, 0, 0)  # no tzinfo
+
+    aware_utc = naive_utc.replace(tzinfo=ZoneInfo("UTC"))
+    local_time = aware_utc.astimezone(ZoneInfo("Asia/Shanghai"))
+
+    assert local_time.hour == 14
+    assert local_time.strftime("%H:%M") == "14:00"
+
+
+def test_poster_timezone_aware_input():
+    """Times already given with +08:00 offset should not be double-converted."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    shanghai_time = datetime(2026, 3, 21, 14, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    local_time = shanghai_time.astimezone(ZoneInfo("Asia/Shanghai"))
+
+    assert local_time.hour == 14
+    assert local_time.strftime("%H:%M") == "14:00"

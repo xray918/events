@@ -23,6 +23,7 @@ export default function CreateEventPage() {
   const [themePreset, setThemePreset] = useState("");
   const [form, setForm] = useState({
     title: "",
+    organizer_name: "",
     description: "",
     cover_image_url: "",
     event_type: "in_person",
@@ -108,6 +109,7 @@ export default function CreateEventPage() {
         credentials: "include",
         body: JSON.stringify({
           title: form.title,
+          organizer_name: form.organizer_name.trim() || null,
           description: form.description || null,
           cover_image_url: form.cover_image_url || null,
           event_type: form.event_type,
@@ -178,6 +180,18 @@ export default function CreateEventPage() {
             placeholder="如：虾聊 AI Agent Hackathon"
             required
             className="mt-1.5"
+          />
+        </div>
+
+        {/* Organizer Name */}
+        <div>
+          <label className="text-sm font-medium">主办方名称</label>
+          <Input
+            value={form.organizer_name}
+            onChange={(e) => update("organizer_name", e.target.value)}
+            placeholder="如：虾聊官方（不填则使用账号昵称）"
+            className="mt-1.5"
+            maxLength={200}
           />
         </div>
 

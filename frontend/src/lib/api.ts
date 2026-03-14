@@ -19,6 +19,7 @@ export interface EventItem {
   id: string;
   title: string;
   slug: string;
+  organizer_name: string | null;
   description: string | null;
   cover_image_url: string | null;
   event_type: string;

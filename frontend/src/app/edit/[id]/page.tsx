@@ -28,6 +28,7 @@ export default function EditEventPage() {
   const [customQuestions, setCustomQuestions] = useState<QuestionDraft[]>([]);
   const [form, setForm] = useState({
     title: "",
+    organizer_name: "",
     description: "",
     cover_image_url: "",
     event_type: "in_person",
@@ -66,6 +67,7 @@ export default function EditEventPage() {
 
         setForm({
           title: e.title || "",
+          organizer_name: e.organizer_name || "",
           description: e.description || "",
           cover_image_url: e.cover_image_url || "",
           event_type: e.event_type || "in_person",
@@ -161,6 +163,7 @@ export default function EditEventPage() {
         credentials: "include",
         body: JSON.stringify({
           title: form.title,
+          organizer_name: form.organizer_name.trim() || null,
           description: form.description || null,
           cover_image_url: form.cover_image_url || null,
           event_type: form.event_type,
@@ -224,6 +227,17 @@ export default function EditEventPage() {
             placeholder="如：虾聊 AI Agent Hackathon"
             required
             className="mt-1.5"
+          />
+        </div>
+
+        <div>
+          <label className="text-sm font-medium">主办方名称</label>
+          <Input
+            value={form.organizer_name}
+            onChange={(e) => update("organizer_name", e.target.value)}
+            placeholder="如：虾聊官方（不填则使用账号昵称）"
+            className="mt-1.5"
+            maxLength={200}
           />
         </div>
 

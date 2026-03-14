@@ -106,6 +106,7 @@ export default function ManagePage() {
   const [cohosts, setCohosts] = useState<{ id: string; nickname: string | null; avatar_url: string | null }[]>([]);
   const [newCohostPhone, setNewCohostPhone] = useState("");
   const [cohostLoading, setCohostLoading] = useState(false);
+  const [cohostError, setCohostError] = useState("");
 
   // Staff state
   const [showStaff, setShowStaff] = useState(false);
@@ -171,6 +172,7 @@ export default function ManagePage() {
   async function handleAddCohost() {
     if (!newCohostPhone.trim()) return;
     setCohostLoading(true);
+    setCohostError("");
     try {
       const res = await fetch(`${API}/api/v1/host/events/${eventId}/cohosts`, {
         method: "POST",
@@ -182,7 +184,11 @@ export default function ManagePage() {
       if (data.success) {
         setNewCohostPhone("");
         loadCohosts();
+      } else {
+        setCohostError(data.detail || "添加失败，请重试");
       }
+    } catch {
+      setCohostError("网络错误，请重试");
     } finally { setCohostLoading(false); }
   }
 
@@ -413,6 +419,13 @@ export default function ManagePage() {
   async function handleDecline(regId: string) {
     setConfirmDialog(null);
     await fetch(`${API}/api/v1/host/events/${eventId}/registrations/${regId}/decline`, {
+      method: "POST", credentials: "include",
+    });
+    loadData();
+  }
+
+  async function handleWaitlist(regId: string) {
+    await fetch(`${API}/api/v1/host/events/${eventId}/registrations/${regId}/waitlist`, {
       method: "POST", credentials: "include",
     });
     loadData();
@@ -761,13 +774,14 @@ export default function ManagePage() {
                 <Input
                   placeholder="输入联合主办方手机号"
                   value={newCohostPhone}
-                  onChange={(e) => setNewCohostPhone(e.target.value)}
+                  onChange={(e) => { setNewCohostPhone(e.target.value); setCohostError(""); }}
                   className="flex-1"
                 />
                 <Button size="sm" onClick={handleAddCohost} disabled={cohostLoading || !newCohostPhone.trim()}>
                   {cohostLoading ? "添加中..." : "添加"}
                 </Button>
               </div>
+              {cohostError && <p className="text-xs text-destructive">{cohostError}</p>}
               {cohosts.length === 0 ? (
                 <p className="text-sm text-muted-foreground">暂无联合主办方</p>
               ) : (
@@ -1065,6 +1079,13 @@ export default function ManagePage() {
                       {reg.status === "pending" && (
                         <>
                           <Button size="sm" onClick={() => handleApprove(reg.id)}>通过</Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => handleWaitlist(reg.id)}
+                          >
+                            候补
+                          </Button>
                           <Button
                             size="sm"
                             variant="outline"

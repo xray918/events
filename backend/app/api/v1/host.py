@@ -156,6 +156,29 @@ async def decline_registration(
     return {"success": True, "data": {"id": str(reg.id), "status": "declined"}}
 
 
+@router.post("/events/{event_id}/registrations/{reg_id}/waitlist")
+async def waitlist_registration(
+    event_id: UUID,
+    reg_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_host(user, event_id, db)
+    result = await db.execute(
+        select(EventRegistration).where(
+            EventRegistration.id == reg_id,
+            EventRegistration.event_id == event_id,
+        )
+    )
+    reg = result.scalar_one_or_none()
+    if not reg:
+        raise HTTPException(status_code=404, detail="报名记录不存在")
+
+    reg.status = "waitlisted"
+    reg.approved_by = user.id
+    return {"success": True, "data": {"id": str(reg.id), "status": "waitlisted"}}
+
+
 @router.post("/events/{event_id}/registrations/batch-approve")
 async def batch_approve(
     event_id: UUID,

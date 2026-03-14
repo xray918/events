@@ -23,6 +23,7 @@ from app.services.clawdchat import (
     publish_event_to_clawdchat as _publish_to_clawdchat,
     archive_circle as _archive_circle,
     notify_event_cancelled as _notify_event_cancelled,
+    sync_event_post_update as _sync_event_post_update,
 )
 from app.services.llm import generate_event_description
 
@@ -199,6 +200,7 @@ def _build_event_response(event: Event, mask_address: bool = False) -> dict:
         "id": event.id,
         "title": event.title,
         "slug": event.slug,
+        "organizer_name": event.organizer_name,
         "description": event.description,
         "cover_image_url": event.cover_image_url,
         "event_type": event.event_type,
@@ -405,6 +407,7 @@ async def create_event(
     event = Event(
         title=data.title,
         slug=slug,
+        organizer_name=data.organizer_name or None,
         description=data.description,
         cover_image_url=data.cover_image_url,
         event_type=data.event_type,
@@ -496,6 +499,9 @@ async def update_event(
     update_data = data.model_dump(exclude_unset=True)
     new_questions = update_data.pop("custom_questions", None)
 
+    _POST_SYNC_FIELDS = {"title", "description"}
+    need_sync = bool(event.clawdchat_post_id and _POST_SYNC_FIELDS & update_data.keys())
+
     for field, value in update_data.items():
         setattr(event, field, value)
 
@@ -516,6 +522,18 @@ async def update_event(
             ))
 
     await db.flush()
+
+    if need_sync:
+        try:
+            await _sync_event_post_update(
+                post_id=str(event.clawdchat_post_id),
+                event_title=event.title,
+                event_description=event.description,
+                event_slug=event.slug,
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Sync post update to ClawdChat failed for event {event_id}: {e}")
 
     result2 = await db.execute(
         select(Event)
@@ -656,7 +674,9 @@ async def publish_event(
                 agent_api_key=agent_api_key,
             )
             if result:
-                event.circle_id, event.circle_name = result
+                event.circle_id, event.circle_name = result[0], result[1]
+                if len(result) > 2 and result[2]:
+                    event.clawdchat_post_id = result[2]
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Circle creation failed for event {event_id}: {e}")
@@ -703,7 +723,9 @@ async def sync_to_clawdchat(
             agent_api_key=agent_api_key,
         )
         if result:
-            event.circle_id, event.circle_name = result
+            event.circle_id, event.circle_name = result[0], result[1]
+            if len(result) > 2 and result[2]:
+                event.clawdchat_post_id = result[2]
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Sync to ClawdChat failed for event {event_id}: {e}")
@@ -1287,16 +1309,27 @@ async def get_event_poster(
     max_content_y = MAX_H - FOOTER_H - 30  # hard stop for content area
 
     # --- Info card ---
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    def _to_local(dt_val) -> datetime:
+        """Convert a UTC-aware (or naive-UTC) datetime to the event's local timezone."""
+        if isinstance(dt_val, str):
+            dt_val = datetime.fromisoformat(dt_val)
+        tz_name = getattr(event, "timezone", None) or "Asia/Shanghai"
+        try:
+            local_tz = ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, Exception):
+            local_tz = ZoneInfo("Asia/Shanghai")
+        if dt_val.tzinfo is None:
+            dt_val = dt_val.replace(tzinfo=ZoneInfo("UTC"))
+        return dt_val.astimezone(local_tz)
+
     info_lines = []
     if event.start_time:
-        dt = event.start_time
-        if isinstance(dt, str):
-            dt = datetime.fromisoformat(dt)
+        dt = _to_local(event.start_time)
         date_str = dt.strftime("%Y年%m月%d日 %H:%M")
         if event.end_time:
-            edt = event.end_time
-            if isinstance(edt, str):
-                edt = datetime.fromisoformat(edt)
+            edt = _to_local(event.end_time)
             date_str += f" — {edt.strftime('%H:%M')}"
         info_lines.append(("时间", date_str))
     if event.location_name:

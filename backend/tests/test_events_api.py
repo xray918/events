@@ -722,3 +722,86 @@ async def test_delete_event_without_circle_skips_archive_circle(client: AsyncCli
         resp = await client.delete(f"/api/v1/events/{event_id}", cookies=cookies)
         assert resp.status_code == 200
         mock_archive.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# organizer_name tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_create_event_with_organizer_name(client: AsyncClient):
+    """Creating an event with organizer_name stores and returns it."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000070",
+            "code": "123456",
+        })
+        cookies = {"events_token": resp.cookies.get("events_token")}
+
+    resp = await client.post("/api/v1/events", json={
+        "title": "Organizer Name Test Event",
+        "organizer_name": "虾聊官方",
+        "start_time": "2026-09-01T10:00:00+08:00",
+    }, cookies=cookies)
+    assert resp.status_code == 201
+    data = resp.json()["data"]
+    assert data["organizer_name"] == "虾聊官方"
+
+    # Verify via detail endpoint
+    slug = data["slug"]
+    resp = await client.get(f"/api/v1/events/{slug}")
+    assert resp.json()["data"]["organizer_name"] == "虾聊官方"
+
+
+@pytest.mark.asyncio
+async def test_create_event_without_organizer_name_defaults_null(client: AsyncClient):
+    """Creating an event without organizer_name returns null."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000071",
+            "code": "123456",
+        })
+        cookies = {"events_token": resp.cookies.get("events_token")}
+
+    resp = await client.post("/api/v1/events", json={
+        "title": "No Organizer Name Event",
+        "start_time": "2026-09-02T10:00:00+08:00",
+    }, cookies=cookies)
+    assert resp.status_code == 201
+    assert resp.json()["data"]["organizer_name"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_event_organizer_name(client: AsyncClient):
+    """Updating organizer_name via PUT persists the change."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000072",
+            "code": "123456",
+        })
+        cookies = {"events_token": resp.cookies.get("events_token")}
+
+    # Create without organizer_name
+    resp = await client.post("/api/v1/events", json={
+        "title": "Update Organizer Test",
+        "start_time": "2026-09-03T10:00:00+08:00",
+    }, cookies=cookies)
+    event_id = resp.json()["data"]["id"]
+    slug = resp.json()["data"]["slug"]
+
+    # Update organizer_name
+    resp = await client.put(f"/api/v1/events/{event_id}", json={
+        "organizer_name": "新的主办方名称",
+    }, cookies=cookies)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["organizer_name"] == "新的主办方名称"
+
+    # Verify persisted
+    resp = await client.get(f"/api/v1/events/{slug}")
+    assert resp.json()["data"]["organizer_name"] == "新的主办方名称"

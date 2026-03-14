@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { ImageCropDialog } from "./image-crop-dialog";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
@@ -16,6 +17,7 @@ export function ImageUpload({ value, onChange, className, themeStyle }: ImageUpl
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [localPreview, setLocalPreview] = useState("");
+  const [cropSrc, setCropSrc] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -28,7 +30,7 @@ export function ImageUpload({ value, onChange, className, themeStyle }: ImageUpl
     };
   }, [localPreview]);
 
-  async function handleFile(file: File) {
+  const handleFileSelect = useCallback((file: File) => {
     if (!file.type.startsWith("image/")) {
       setError("请选择图片文件");
       return;
@@ -37,13 +39,19 @@ export function ImageUpload({ value, onChange, className, themeStyle }: ImageUpl
       setError("图片不能超过 5MB");
       return;
     }
+    setError("");
+    const objectUrl = URL.createObjectURL(file);
+    setCropSrc(objectUrl);
+  }, []);
 
-    setLocalPreview(URL.createObjectURL(file));
+  async function uploadBlob(blob: Blob) {
+    const preview = URL.createObjectURL(blob);
+    setLocalPreview(preview);
     setUploading(true);
     setError("");
 
     const formData = new FormData();
-    formData.append("file", file);
+    formData.append("file", blob, "cover.jpg");
 
     try {
       const res = await fetch(`${API}/api/v1/upload/image`, {
@@ -66,6 +74,17 @@ export function ImageUpload({ value, onChange, className, themeStyle }: ImageUpl
     }
   }
 
+  function handleCropConfirm(croppedBlob: Blob) {
+    if (cropSrc) URL.revokeObjectURL(cropSrc);
+    setCropSrc("");
+    uploadBlob(croppedBlob);
+  }
+
+  function handleCropCancel() {
+    if (cropSrc) URL.revokeObjectURL(cropSrc);
+    setCropSrc("");
+  }
+
   const previewSrc = localPreview || value;
   const hasThemeBg = !previewSrc && !!themeStyle;
 
@@ -81,7 +100,7 @@ export function ImageUpload({ value, onChange, className, themeStyle }: ImageUpl
           e.preventDefault();
           e.stopPropagation();
           const file = e.dataTransfer.files[0];
-          if (file) handleFile(file);
+          if (file) handleFileSelect(file);
         }}
       >
         {previewSrc ? (
@@ -130,10 +149,19 @@ export function ImageUpload({ value, onChange, className, themeStyle }: ImageUpl
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
-          if (file) handleFile(file);
+          if (file) handleFileSelect(file);
+          if (inputRef.current) inputRef.current.value = "";
         }}
       />
       {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
+
+      {cropSrc && (
+        <ImageCropDialog
+          imageSrc={cropSrc}
+          onConfirm={handleCropConfirm}
+          onCancel={handleCropCancel}
+        />
+      )}
     </div>
   );
 }
