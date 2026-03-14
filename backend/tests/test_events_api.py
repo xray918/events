@@ -1,8 +1,9 @@
 """Events API tests — CRUD, dual auth, Circle integration."""
 
 import pytest
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 from app.api.v1.events import _mask_address
 
@@ -153,7 +154,8 @@ async def test_full_event_lifecycle(client: AsyncClient):
         with patch("app.api.v1.events._create_event_circle", new_callable=AsyncMock) as mock_publish:
             from uuid import uuid4
             mock_circle_id = uuid4()
-            mock_publish.return_value = mock_circle_id
+            mock_circle_name = "test-lifecycle-event-circle"
+            mock_publish.return_value = (mock_circle_id, mock_circle_name)
 
             resp = await client.post(f"/api/v1/events/{event_id}/publish", cookies=cookies)
             assert resp.status_code == 200
@@ -805,3 +807,158 @@ async def test_update_event_organizer_name(client: AsyncClient):
     # Verify persisted
     resp = await client.get(f"/api/v1/events/{slug}")
     assert resp.json()["data"]["organizer_name"] == "新的主办方名称"
+
+
+# ---------------------------------------------------------------------------
+# Offline / Online tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_event_offline_and_online(client: AsyncClient):
+    """Published event can be taken offline and brought back online."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000080",
+            "code": "123456",
+        })
+        cookies = {"events_token": resp.cookies.get("events_token")}
+
+    # Create event
+    resp = await client.post("/api/v1/events", json={
+        "title": "Offline Test Event",
+        "start_time": "2026-10-01T10:00:00+08:00",
+    }, cookies=cookies)
+    assert resp.status_code == 201
+    event_id = resp.json()["data"]["id"]
+    slug = resp.json()["data"]["slug"]
+
+    # Cannot offline a draft
+    resp = await client.post(f"/api/v1/events/{event_id}/offline", cookies=cookies)
+    assert resp.status_code == 400
+
+    # Publish first
+    with patch("app.api.v1.events._create_event_circle", return_value=None):
+        resp = await client.post(f"/api/v1/events/{event_id}/publish",
+                                 json={"sync_to_clawdchat": False}, cookies=cookies)
+    assert resp.status_code == 200
+
+    # Take offline
+    resp = await client.post(f"/api/v1/events/{event_id}/offline", cookies=cookies)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "offline"
+
+    # Public listing should not include offline event
+    resp = await client.get("/api/v1/events")
+    slugs_in_list = [e["slug"] for e in resp.json()["data"]]
+    assert slug not in slugs_in_list
+
+    # Anonymous access to offline event by slug returns 404 (use fresh client to avoid stored cookie)
+    from main import app as _app
+    async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as anon:
+        resp = await anon.get(f"/api/v1/events/{slug}")
+        assert resp.status_code == 404
+
+    # Host can still access offline event
+    resp = await client.get(f"/api/v1/events/{slug}", cookies=cookies)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "offline"
+
+    # Cannot offline again (not published)
+    resp = await client.post(f"/api/v1/events/{event_id}/offline", cookies=cookies)
+    assert resp.status_code == 400
+
+    # Bring back online
+    resp = await client.post(f"/api/v1/events/{event_id}/online", cookies=cookies)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "published"
+
+    # Now visible publicly again
+    resp = await client.get(f"/api/v1/events/{slug}")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "published"
+
+    # Cannot online a published event
+    resp = await client.post(f"/api/v1/events/{event_id}/online", cookies=cookies)
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_offline_event_register_blocked(client: AsyncClient):
+    """Registration on an offline event is rejected."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000081",
+            "code": "123456",
+        })
+        host_cookies = {"events_token": resp.cookies.get("events_token")}
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000082",
+            "code": "123456",
+        })
+        user_cookies = {"events_token": resp.cookies.get("events_token")}
+
+    # Create + publish event
+    resp = await client.post("/api/v1/events", json={
+        "title": "Register Block Offline Test",
+        "start_time": "2026-10-05T10:00:00+08:00",
+    }, cookies=host_cookies)
+    event_id = resp.json()["data"]["id"]
+    slug = resp.json()["data"]["slug"]
+
+    with patch("app.api.v1.events._create_event_circle", return_value=None):
+        await client.post(f"/api/v1/events/{event_id}/publish",
+                          json={"sync_to_clawdchat": False}, cookies=host_cookies)
+
+    # Take offline
+    await client.post(f"/api/v1/events/{event_id}/offline", cookies=host_cookies)
+
+    # Another user tries to register — should be blocked
+    resp = await client.post(f"/api/v1/events/{slug}/register", cookies=user_cookies)
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_offline_only_host_access(client: AsyncClient):
+    """A different logged-in user cannot view an offline event."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000083",
+            "code": "123456",
+        })
+        host_cookies = {"events_token": resp.cookies.get("events_token")}
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000084",
+            "code": "123456",
+        })
+        other_cookies = {"events_token": resp.cookies.get("events_token")}
+
+    resp = await client.post("/api/v1/events", json={
+        "title": "Host Only Offline Test",
+        "start_time": "2026-10-10T10:00:00+08:00",
+    }, cookies=host_cookies)
+    event_id = resp.json()["data"]["id"]
+    slug = resp.json()["data"]["slug"]
+
+    with patch("app.api.v1.events._create_event_circle", return_value=None):
+        await client.post(f"/api/v1/events/{event_id}/publish",
+                          json={"sync_to_clawdchat": False}, cookies=host_cookies)
+
+    await client.post(f"/api/v1/events/{event_id}/offline", cookies=host_cookies)
+
+    # Another user gets 404
+    resp = await client.get(f"/api/v1/events/{slug}", cookies=other_cookies)
+    assert resp.status_code == 404
+
+    # Host still sees it
+    resp = await client.get(f"/api/v1/events/{slug}", cookies=host_cookies)
+    assert resp.status_code == 200

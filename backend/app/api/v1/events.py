@@ -243,7 +243,9 @@ async def list_events(
 ):
     """Browse upcoming events."""
     where_clauses = [Event.visibility == "public"]
-    if status_filter:
+    # Only allow filtering by public-safe statuses; offline is never visible publicly
+    public_safe_statuses = {"published", "cancelled", "completed"}
+    if status_filter and status_filter in public_safe_statuses:
         where_clauses.append(Event.status == status_filter)
     else:
         where_clauses.append(Event.status == "published")
@@ -366,6 +368,12 @@ async def get_event(
     event = result.scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="活动不存在")
+
+    # Offline events are only visible to the host
+    if event.status == "offline":
+        caller_id = user.id if user else (agent.owner_id if agent else None)
+        if not caller_id or caller_id != event.host_id:
+            raise HTTPException(status_code=404, detail="活动不存在")
 
     should_mask = False
     if event.require_approval:
@@ -682,6 +690,58 @@ async def publish_event(
             logging.getLogger(__name__).error(f"Circle creation failed for event {event_id}: {e}")
 
     return {"success": True, "data": {"id": str(event.id), "status": event.status, "circle_id": str(event.circle_id) if event.circle_id else None}}
+
+
+@router.post("/{event_id}/offline")
+async def take_event_offline(
+    event_id: str,
+    agent: Optional[Agent] = Depends(get_optional_agent),
+    user: Optional[User] = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Temporarily take a published event offline (hidden from public). Host only."""
+    if not user and not agent:
+        raise HTTPException(status_code=401, detail="请先登录或使用 Agent API Key 认证")
+
+    result = await db.execute(select(Event).where(Event.id == event_id))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="活动不存在")
+
+    caller_id = user.id if user else agent.owner_id
+    if event.host_id != caller_id:
+        raise HTTPException(status_code=403, detail="无权操作此活动")
+    if event.status != "published":
+        raise HTTPException(status_code=400, detail=f"当前状态 {event.status} 不能下线，只有已发布的活动可以下线")
+
+    event.status = "offline"
+    return {"success": True, "data": {"id": str(event.id), "status": event.status}}
+
+
+@router.post("/{event_id}/online")
+async def bring_event_online(
+    event_id: str,
+    agent: Optional[Agent] = Depends(get_optional_agent),
+    user: Optional[User] = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bring an offline event back online (restore to published). Host only."""
+    if not user and not agent:
+        raise HTTPException(status_code=401, detail="请先登录或使用 Agent API Key 认证")
+
+    result = await db.execute(select(Event).where(Event.id == event_id))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="活动不存在")
+
+    caller_id = user.id if user else agent.owner_id
+    if event.host_id != caller_id:
+        raise HTTPException(status_code=403, detail="无权操作此活动")
+    if event.status != "offline":
+        raise HTTPException(status_code=400, detail=f"当前状态 {event.status} 不能上线，只有已下线的活动可以重新上线")
+
+    event.status = "published"
+    return {"success": True, "data": {"id": str(event.id), "status": event.status}}
 
 
 @router.post("/{event_id}/sync-clawdchat")

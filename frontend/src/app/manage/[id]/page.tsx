@@ -66,6 +66,7 @@ interface WinnerInfo {
 const statusLabels: Record<string, string> = {
   draft: "草稿",
   published: "已发布",
+  offline: "已下线",
   cancelled: "已取消",
   completed: "已结束",
 };
@@ -347,6 +348,25 @@ export default function ManagePage() {
     }
   }
 
+  async function handleOffline() {
+    setActionLoading("offline");
+    try {
+      await fetch(`${API}/api/v1/events/${eventId}/offline`, { method: "POST", credentials: "include" });
+      await loadEvent();
+    } finally {
+      setActionLoading("");
+      setConfirmDialog(null);
+    }
+  }
+
+  async function handleOnline() {
+    setActionLoading("online");
+    try {
+      await fetch(`${API}/api/v1/events/${eventId}/online`, { method: "POST", credentials: "include" });
+      await loadEvent();
+    } finally { setActionLoading(""); }
+  }
+
   async function handleDelete() {
     setActionLoading("delete");
     try {
@@ -499,7 +519,7 @@ export default function ManagePage() {
       {event && (
         <div className="mb-6">
           <div className="flex items-center gap-3 mb-2">
-            <Badge variant={event.status === "published" ? "default" : event.status === "draft" ? "secondary" : "outline"}>
+            <Badge variant={event.status === "published" ? "default" : event.status === "draft" ? "secondary" : event.status === "offline" ? "destructive" : "outline"}>
               {statusLabels[event.status] || event.status}
             </Badge>
             <span className="text-xs text-muted-foreground">
@@ -541,7 +561,7 @@ export default function ManagePage() {
             <Button variant="outline">查看活动页</Button>
           </Link>
         )}
-        {event && (event.status === "draft" || event.status === "published") && (
+        {event && (event.status === "draft" || event.status === "published" || event.status === "offline") && (
           <Link href={`/edit/${event.id}`}>
             <Button variant="outline">编辑活动</Button>
           </Link>
@@ -554,6 +574,26 @@ export default function ManagePage() {
         >
           {actionLoading === "clone" ? "克隆中..." : "克隆活动"}
         </Button>
+        {event?.status === "published" && (
+          <Button
+            variant="outline"
+            className="text-orange-600 hover:text-orange-600"
+            onClick={() => setConfirmDialog({ type: "offline" })}
+            disabled={actionLoading === "offline"}
+          >
+            {actionLoading === "offline" ? "下线中..." : "暂时下线"}
+          </Button>
+        )}
+        {event?.status === "offline" && (
+          <Button
+            variant="outline"
+            className="text-green-600 hover:text-green-600"
+            onClick={handleOnline}
+            disabled={actionLoading === "online"}
+          >
+            {actionLoading === "online" ? "上线中..." : "重新上线"}
+          </Button>
+        )}
         {event?.status === "published" && (
           <Button
             variant="outline"
@@ -1145,11 +1185,13 @@ export default function ManagePage() {
                 {confirmDialog.type === "cancel" && "确认取消活动？"}
                 {confirmDialog.type === "delete" && "确认删除活动？"}
                 {confirmDialog.type === "decline" && "确认拒绝此报名？"}
+                {confirmDialog.type === "offline" && "确认暂时下线此活动？"}
               </h3>
               <p className="text-sm text-muted-foreground mt-1">
                 {confirmDialog.type === "cancel" && "取消后参与者将收到通知，此操作不可撤销。"}
                 {confirmDialog.type === "delete" && "删除后所有报名、问卷数据将被永久清除。"}
                 {confirmDialog.type === "decline" && "拒绝后该用户将无法签到。"}
+                {confirmDialog.type === "offline" && "下线后活动将对外隐藏，修改完成后可随时重新上线。"}
               </p>
             </div>
             <div className="px-5 py-3 border-t flex gap-2">
@@ -1164,6 +1206,7 @@ export default function ManagePage() {
                   if (confirmDialog.type === "cancel") handleCancel();
                   else if (confirmDialog.type === "delete") handleDelete();
                   else if (confirmDialog.type === "decline" && confirmDialog.regId) handleDecline(confirmDialog.regId);
+                  else if (confirmDialog.type === "offline") handleOffline();
                 }}
               >
                 {actionLoading ? "处理中..." : "确认"}
