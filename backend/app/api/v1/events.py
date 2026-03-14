@@ -162,7 +162,9 @@ def _build_event_response(event: Event, mask_address: bool = False) -> dict:
         approved_regs = [r for r in event.registrations if r.status == "approved"]
         pending_regs = [r for r in event.registrations if r.status == "pending"]
         reg_count = len(approved_regs) + len(pending_regs)
-        for r in approved_regs[:12]:
+        # 头像预览：approved 优先，不足时补 pending，保持与计数一致
+        preview_regs = (approved_regs + pending_regs)[:12]
+        for r in preview_regs:
             if r.user:
                 attendees_preview.append({
                     "nickname": r.user.nickname,
@@ -980,6 +982,7 @@ class GenerateDescRequest(BaseModel):
     location: Optional[str] = None
     start_time: Optional[str] = None
     existing_description: Optional[str] = None
+    user_prompt: Optional[str] = None
 
 
 @router.post("/generate-description")
@@ -994,6 +997,7 @@ async def generate_description(
         location=data.location,
         start_time=data.start_time,
         existing_description=data.existing_description,
+        user_prompt=data.user_prompt,
     )
     if result is None:
         raise HTTPException(status_code=500, detail="AI 描述生成失败，请稍后重试")
@@ -1105,7 +1109,7 @@ async def get_event_poster(
     slug: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate a shareable poster image (PNG) that resembles the mobile event page."""
+    """Generate a shareable poster image (PNG) with brand footer."""
     import io
     import qrcode
     import re as _re
@@ -1120,10 +1124,13 @@ async def get_event_poster(
     if not event:
         raise HTTPException(status_code=404, detail="活动不存在")
 
-    W, H = 750, 1334
+    W = 750
+    FOOTER_H = 150
+    MAX_H = 2200        # upper bound for drawing buffer
     PAD = 40
     content_w = W - PAD * 2
-    canvas = Image.new("RGB", (W, H), "#ffffff")
+
+    canvas = Image.new("RGB", (W, MAX_H), "#ffffff")
     draw = ImageDraw.Draw(canvas)
 
     font_path = _find_cjk_font()
@@ -1135,9 +1142,16 @@ async def get_event_poster(
     font_small = _font(22)
     font_badge = _font(20)
     font_desc = _font(23)
+    font_brand = _font(30)
+    font_brand_sub = _font(20)
 
-    # --- Cover image (crop-to-fill) ---
-    cover_h = 420
+    # Determine theme preset for gradient fallback
+    theme_preset: Optional[str] = None
+    if event.theme and isinstance(event.theme, dict):
+        theme_preset = event.theme.get("preset")
+
+    # --- Cover image (crop-to-fill, 16:9 ratio) ---
+    cover_h = int(W * 9 / 16)  # 750 × 422 ≈ 16:9
     cover_loaded = False
     if event.cover_image_url:
         try:
@@ -1155,52 +1169,99 @@ async def get_event_poster(
                     cover_img = cover_img.crop((left, 0, left + new_w, ch))
                 else:
                     new_h = int(cw / target_ratio)
-                    top = 0
-                    cover_img = cover_img.crop((0, top, cw, top + new_h))
+                    cover_img = cover_img.crop((0, 0, cw, new_h))
                 cover_img = cover_img.resize((W, cover_h), Image.LANCZOS)
                 canvas.paste(cover_img, (0, 0))
                 cover_loaded = True
         except Exception:
             pass
     if not cover_loaded:
-        _draw_gradient(draw, W, cover_h, event.id)
+        _draw_theme_gradient(draw, W, cover_h, theme_preset, event.id)
 
-    # Gradient overlay at bottom of cover for smooth transition
-    overlay = Image.new("RGBA", (W, 100), (0, 0, 0, 0))
-    ov_draw = ImageDraw.Draw(overlay)
-    for yi in range(100):
-        alpha = int(120 * yi / 100)
-        ov_draw.line([(0, yi), (W, yi)], fill=(0, 0, 0, alpha))
+    # --- Dark gradient scrim at bottom of cover (for title readability) ---
+    scrim_h = 200
+    scrim = Image.new("RGBA", (W, scrim_h), (0, 0, 0, 0))
+    scrim_draw = ImageDraw.Draw(scrim)
+    for yi in range(scrim_h):
+        alpha = int(200 * yi / scrim_h)
+        scrim_draw.line([(0, yi), (W, yi)], fill=(0, 0, 0, alpha))
     canvas_rgba = canvas.convert("RGBA")
-    canvas_rgba.paste(overlay, (0, cover_h - 100), overlay)
+    canvas_rgba.paste(scrim, (0, cover_h - scrim_h), scrim)
     canvas = canvas_rgba.convert("RGB")
     draw = ImageDraw.Draw(canvas)
 
-    y = cover_h + 24
+    # --- Title overlaid on cover (vertically centered, slightly above center) ---
+    # Auto-scale font: try to fit title on 1 line (matching the event detail page).
+    # Use full cover width minus small side padding (not the narrower content column).
+    _title_area_w = W - 100   # ~650 px, nearly full cover width
+    font_poster = _font(36)   # safe default
+    for _fsize in (52, 48, 44, 40, 37, 34, 31):
+        font_poster = _font(_fsize)
+        title_lines = _wrap_lines(draw, event.title, _title_area_w, font_poster)
+        if len(title_lines) == 1:
+            break  # single-line — perfect
+    # If still multi-line at 31px, allow 2 lines at largest size that fits
+    if len(title_lines) > 1:
+        for _fsize in (52, 46, 40, 36):
+            font_poster = _font(_fsize)
+            title_lines = _wrap_lines(draw, event.title, _title_area_w, font_poster)
+            if len(title_lines) <= 2:
+                break
+    line_h_title = int(font_poster.size * 1.35)
+    total_title_h = len(title_lines) * line_h_title
+    # Shift up from dead center for a more poster-like placement
+    title_block_y = (cover_h - total_title_h) // 2 - cover_h // 14
 
-    # --- Badges (event type + approval) ---
+    # Draw shadow + text for each line
+    shadow_layer = Image.new("RGBA", (W, MAX_H), (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow_layer)
+    _ty = title_block_y
+    for line in title_lines:
+        tw = int(draw.textlength(line, font=font_poster))
+        shadow_draw.text(((W - tw) // 2 + 2, _ty + 2), line, font=font_poster, fill=(0, 0, 0, 100))
+        _ty += line_h_title
+    canvas_tmp = canvas.convert("RGBA")
+    canvas_tmp = Image.alpha_composite(canvas_tmp, shadow_layer)
+    canvas = canvas_tmp.convert("RGB")
+    draw = ImageDraw.Draw(canvas)
+    for line in title_lines:
+        tw = int(draw.textlength(line, font=font_poster))
+        draw.text(((W - tw) // 2, title_block_y), line, font=font_poster, fill="#ffffff")
+        title_block_y += line_h_title
+
+    # --- Badges at bottom-right of cover (matching event detail page) ---
     type_labels = {"in_person": "线下活动", "online": "线上活动", "hybrid": "混合活动"}
     badge_text = type_labels.get(event.event_type, event.event_type)
-    bw = int(draw.textlength(badge_text, font=font_badge)) + 24
-    draw.rounded_rectangle([(PAD, y), (PAD + bw, y + 32)], radius=16, fill="#f3f4f6")
-    draw.text((PAD + 12, y + 5), badge_text, font=font_badge, fill="#555555")
-    bx = PAD + bw + 10
+    badge_bg = (255, 255, 255, 50)   # semi-transparent white
+    badge_text_color = "#ffffff"
+
+    # Build badge list
+    badges = [badge_text]
     if event.require_approval:
-        at = "需审批"
-        aw = int(draw.textlength(at, font=font_badge)) + 24
-        draw.rounded_rectangle([(bx, y), (bx + aw, y + 32)], radius=16, fill="#fff7ed")
-        draw.text((bx + 12, y + 5), at, font=font_badge, fill="#c2410c")
-    y += 48
+        badges.append("需审批")
 
-    # --- Title ---
-    _draw_text_wrapped(draw, event.title, PAD, y, content_w, font_title, "#111111")
-    y += _text_height(draw, event.title, content_w, font_title) + 16
+    bx = W - PAD
+    by = cover_h - 40
+    for bt in reversed(badges):
+        bw = int(draw.textlength(bt, font=font_badge)) + 24
+        bx -= bw
+        # Draw semi-transparent pill on RGBA layer
+        pill = Image.new("RGBA", (bw, 32), (0, 0, 0, 0))
+        pill_draw = ImageDraw.Draw(pill)
+        pill_draw.rounded_rectangle([(0, 0), (bw, 32)], radius=16,
+                                    fill=(255, 255, 255, 60))
+        canvas_rgba2 = canvas.convert("RGBA")
+        canvas_rgba2.paste(pill, (bx, by - 16), pill)
+        canvas = canvas_rgba2.convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+        draw.text((bx + 12, by - 11), bt, font=font_badge, fill=badge_text_color)
+        bx -= 10
 
-    # --- Info card background ---
-    card_top = y
-    card_items_h = 0
+    y = cover_h + 24
+    max_content_y = MAX_H - FOOTER_H - 30  # hard stop for content area
+
+    # --- Info card ---
     info_lines = []
-
     if event.start_time:
         dt = event.start_time
         if isinstance(dt, str):
@@ -1211,74 +1272,132 @@ async def get_event_poster(
             if isinstance(edt, str):
                 edt = datetime.fromisoformat(edt)
             date_str += f" — {edt.strftime('%H:%M')}"
-        info_lines.append(("📅", date_str))
-
+        info_lines.append(("时间", date_str))
     if event.location_name:
         loc = event.location_name
         if event.location_address:
             loc += f" · {event.location_address}"
         if len(loc) > 35:
             loc = loc[:35] + "..."
-        info_lines.append(("📍", loc))
-
+        info_lines.append(("地点", loc))
     if event.host:
-        info_lines.append(("👤", f"主办：{event.host.nickname}"))
+        info_lines.append(("主办", event.host.nickname))
 
+    LABEL_W = 52   # fixed width for the label column
+    card_top = y
     card_items_h = len(info_lines) * 44 + 20
     draw.rounded_rectangle(
         [(PAD - 4, card_top), (W - PAD + 4, card_top + card_items_h)],
         radius=14, fill="#fafafa", outline="#eeeeee",
     )
-
-    iy = card_top + 10
-    for icon, text in info_lines:
-        draw.text((PAD + 8, iy), icon, font=font_body, fill="#666666")
-        draw.text((PAD + 46, iy), text, font=font_body, fill="#333333")
+    iy = card_top + 12
+    for label, text in info_lines:
+        draw.text((PAD + 8, iy), label, font=font_badge, fill="#999999")
+        draw.text((PAD + LABEL_W + 8, iy + 2), text, font=font_body, fill="#333333")
         iy += 44
     y = card_top + card_items_h + 20
 
-    # --- Description excerpt ---
-    if event.description:
-        desc = event.description
-        desc = _re.sub(r'[#*_`>\[\]()!~]', '', desc)
-        desc = _re.sub(r'\n{2,}', '\n', desc).strip()
-        desc_lines = desc.split('\n')
-        clean_lines = [ln.strip() for ln in desc_lines if ln.strip() and not ln.strip().startswith('-')]
-        desc = '\n'.join(clean_lines[:6])
-        if len(desc) > 200:
-            desc = desc[:200] + "..."
+    # --- Description excerpt (clipped to content area) ---
+    if event.description and y < max_content_y - 80:
+        raw = event.description
+        # 1. Remove fenced code blocks
+        raw = _re.sub(r'```[\s\S]*?```', '', raw)
+        raw = _re.sub(r'`[^`]+`', '', raw)
+        # 2. Remove markdown headings, links, images, etc.
+        raw = _re.sub(r'!\[[^\]]*\]\([^)]*\)', '', raw)
+        raw = _re.sub(r'\[[^\]]*\]\([^)]*\)', r'', raw)
+        raw = _re.sub(r'[#*_>`~]', '', raw)
+        # 3. Remove non-CJK, non-ASCII-printable characters
+        #    Keep: CJK (4E00-9FFF), CJK Ext (3400-4DBF), punctuation, ASCII printable
+        raw = _re.sub(r'[^\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffef'
+                      r'\u2018-\u201f\u2014\u2026'
+                      r' \t\r\na-zA-Z0-9，。！？、：；""''（）【】…—·《》\-.,;:!?()]', '', raw)
+        # 4. Clean up whitespace and empty lines
+        raw = _re.sub(r'[ \t]+', ' ', raw)
+        raw = _re.sub(r'\n{2,}', '\n', raw).strip()
+        # 5. Take first meaningful paragraph lines, skip bullet-style short lines
+        para_lines = [ln.strip() for ln in raw.split('\n') if ln.strip()]
+        # Prefer longer lines (paragraph text over list stubs)
+        clean_lines = [ln for ln in para_lines if len(ln) > 5][:6]
+        desc = '\n'.join(clean_lines)
+        if len(desc) > 240:
+            desc = desc[:240] + "..."
 
-        draw.text((PAD, y), "活动详情", font=font_body, fill="#111111")
-        y += 36
-        draw.line([(PAD, y), (W - PAD, y)], fill="#eeeeee", width=1)
-        y += 10
-        _draw_text_wrapped(draw, desc, PAD, y, content_w, font_desc, "#555555")
-        y += _text_height(draw, desc, content_w, font_desc) + 10
+        if desc.strip():
+            draw.text((PAD, y), "活动详情", font=font_body, fill="#111111")
+            y += 36
+            draw.line([(PAD, y), (W - PAD, y)], fill="#eeeeee", width=1)
+            y += 14
+            line_h = int(font_desc.size * 1.65)
+            avail = max_content_y - y - 10
+            max_lines = max(1, avail // line_h)
+            lines = _wrap_lines(draw, desc, content_w, font_desc)[:max_lines]
+            for line in lines:
+                draw.text((PAD, y), line, font=font_desc, fill="#555555")
+                y += line_h
 
-    # --- QR code section ---
+    # ---- Crop canvas to actual content height, then add brand footer ----
+    content_end = y + 30          # small bottom padding
+    footer_y = content_end
+    H = footer_y + FOOTER_H
+
+    # Crop the buffer canvas down to the real height
+    canvas = canvas.crop((0, 0, W, H))
+    draw = ImageDraw.Draw(canvas)
+
+    draw.rectangle([(0, footer_y), (W, H)], fill="#f8f9fa")
+    draw.line([(0, footer_y), (W, footer_y)], fill="#e5e7eb", width=2)
+
+    # Generate QR code for footer
     from app.core.config import settings
     event_url = f"{settings.frontend_url}/e/{event.slug}"
-    qr = qrcode.QRCode(version=1, box_size=8, border=2)
+    qr = qrcode.QRCode(version=1, box_size=6, border=2)
     qr.add_data(event_url)
     qr.make(fit=True)
     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-
-    qr_size = 200
+    qr_size = 100
     qr_img = qr_img.resize((qr_size, qr_size), Image.LANCZOS)
-    qr_x = (W - qr_size) // 2
-    qr_y = max(y + 20, H - qr_size - 90)
 
-    # QR card background
-    qr_card_pad = 30
-    draw.rounded_rectangle(
-        [(PAD, qr_y - qr_card_pad), (W - PAD, H - 20)],
-        radius=16, fill="#f9fafb", outline="#e5e7eb",
-    )
+    # QR on right side — center QR + label as one block within FOOTER_H
+    qr_label_text = "扫码参与"
+    qr_label_h = font_brand_sub.size + 4   # approximate label height + gap
+    qr_block_h = qr_size + qr_label_h
+    qr_x = W - PAD - qr_size
+    qr_y = footer_y + (FOOTER_H - qr_block_h) // 2
     canvas.paste(qr_img, (qr_x, qr_y))
+    qr_label_w = int(draw.textlength(qr_label_text, font=font_brand_sub))
+    draw.text((qr_x + (qr_size - qr_label_w) // 2, qr_y + qr_size + 4),
+              qr_label_text, font=font_brand_sub, fill="#888888")
 
-    label = "扫码查看活动详情"
-    text_w = draw.textlength(label, font=font_small)
-    draw.text(((W - text_w) / 2, qr_y + qr_size + 12), label, font=font_small, fill="#888888")
+    # Logo icon on left side – use actual clawdchat logo image
+    LOGO_SIZE = 72
+    logo_x = PAD
+    logo_y = footer_y + (FOOTER_H - LOGO_SIZE) // 2
+    import os as _os
+    # events.py lives at app/api/v1/events.py → go up 3 levels to reach app/
+    _logo_path = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+        "assets", "logo.png",
+    )
+    try:
+        logo_img = Image.open(_logo_path).convert("RGBA")
+        logo_img = logo_img.resize((LOGO_SIZE, LOGO_SIZE), Image.LANCZOS)
+        # Paste with alpha mask for transparency support
+        canvas_rgba3 = canvas.convert("RGBA")
+        canvas_rgba3.paste(logo_img, (logo_x, logo_y), logo_img)
+        canvas = canvas_rgba3.convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+    except Exception:
+        # Fallback: draw colored rounded square with "虾" text
+        _draw_rounded_logo(draw, logo_x, logo_y, LOGO_SIZE, theme_preset)
+        draw.text((logo_x + LOGO_SIZE // 2, logo_y + LOGO_SIZE // 2),
+                  "虾", font=_font(30), fill="#ffffff", anchor="mm")
+
+    # Brand text
+    text_x = logo_x + LOGO_SIZE + 16
+    text_y_top = footer_y + (FOOTER_H - 62) // 2
+    draw.text((text_x, text_y_top), "虾聊 · Events", font=font_brand, fill="#111111")
+    draw.text((text_x, text_y_top + 38), "扫描二维码参与活动", font=font_brand_sub, fill="#888888")
 
     buf = io.BytesIO()
     canvas.save(buf, format="PNG", quality=95)
@@ -1307,24 +1426,61 @@ def _find_cjk_font() -> Optional[str]:
     return None
 
 
-def _draw_gradient(draw, w: int, h: int, event_id):
-    """Draw a gradient background."""
-    gradients = [
-        ((102, 126, 234), (118, 75, 162)),
-        ((240, 147, 251), (245, 87, 108)),
-        ((79, 172, 254), (0, 242, 254)),
-        ((67, 233, 123), (56, 249, 215)),
-        ((250, 112, 154), (254, 225, 64)),
-        ((161, 140, 209), (251, 194, 235)),
-    ]
-    eid = str(event_id).replace("-", "")
-    idx = int(eid[:8], 16) % len(gradients)
-    c1, c2 = gradients[idx]
+_THEME_GRADIENTS = {
+    "aurora":  ((102, 126, 234), (118, 75, 162)),
+    "sunset":  ((246, 132, 74),  (180, 67, 134)),
+    "ocean":   ((15, 32, 39),    (44, 83, 100)),
+    "forest":  ((19, 78, 94),    (113, 178, 128)),
+    "neon":    ((10, 10, 10),    (22, 33, 62)),
+    "minimal": ((245, 247, 250), (228, 232, 236)),
+    "warm":    ((247, 151, 30),  (255, 210, 0)),
+    "cosmic":  ((15, 12, 41),    (36, 36, 62)),
+    "cherry":  ((251, 194, 235), (166, 193, 238)),
+    "ink":     ((44, 62, 80),    (189, 195, 199)),
+    "fire":    ((203, 45, 62),   (247, 151, 30)),
+    "arctic":  ((224, 247, 250), (128, 222, 234)),
+}
+
+_FALLBACK_GRADIENTS = [
+    ((102, 126, 234), (118, 75, 162)),
+    ((240, 147, 251), (245, 87, 108)),
+    ((79, 172, 254), (0, 242, 254)),
+    ((67, 233, 123), (56, 249, 215)),
+    ((250, 112, 154), (254, 225, 64)),
+    ((161, 140, 209), (251, 194, 235)),
+]
+
+
+def _draw_theme_gradient(draw, w: int, h: int, preset: Optional[str], event_id):
+    """Draw gradient using theme preset colors, falling back to event-id-based selection."""
+    if preset and preset in _THEME_GRADIENTS:
+        c1, c2 = _THEME_GRADIENTS[preset]
+    else:
+        eid = str(event_id).replace("-", "")
+        idx = int(eid[:8], 16) % len(_FALLBACK_GRADIENTS)
+        c1, c2 = _FALLBACK_GRADIENTS[idx]
     for y in range(h):
         r = int(c1[0] + (c2[0] - c1[0]) * y / h)
         g = int(c1[1] + (c2[1] - c1[1]) * y / h)
         b = int(c1[2] + (c2[2] - c1[2]) * y / h)
         draw.line([(0, y), (w, y)], fill=(r, g, b))
+
+
+def _draw_rounded_logo(draw, x: int, y: int, size: int, preset: Optional[str]):
+    """Draw a rounded-square logo background using theme accent color."""
+    accent_colors = {
+        "aurora": "#667eea", "sunset": "#ee5a84", "ocean": "#4fc3f7",
+        "forest": "#71b280", "neon": "#00f5d4", "minimal": "#475569",
+        "warm": "#f7971e", "cosmic": "#a78bfa", "cherry": "#ec4899",
+        "ink": "#64748b", "fire": "#ef473a", "arctic": "#0097a7",
+    }
+    color = accent_colors.get(preset or "", "#667eea")
+    draw.rounded_rectangle([(x, y), (x + size, y + size)], radius=14, fill=color)
+
+
+def _draw_gradient(draw, w: int, h: int, event_id):
+    """Legacy wrapper kept for compatibility."""
+    _draw_theme_gradient(draw, w, h, None, event_id)
 
 
 def _wrap_lines(draw, text: str, max_w: int, font) -> list[str]:

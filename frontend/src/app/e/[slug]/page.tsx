@@ -1,10 +1,10 @@
 import { notFound } from "next/navigation";
+import type { Metadata } from "next";
 import { fetchAPI, EventItem } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { RegisterButton } from "@/components/register-button";
 import { EventDescription } from "@/components/event-description";
-import { SharePosterButton } from "@/components/share-poster-button";
 import { HostActions } from "@/components/host-actions";
 import { EventFeedback } from "@/components/event-feedback";
 import { getCoverStyle, getThemeForEvent } from "@/lib/themes";
@@ -42,6 +42,55 @@ const typeLabels: Record<string, string> = {
   hybrid: "混合活动",
 };
 
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://events.clawdchat.cn";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: { slug: string };
+}): Promise<Metadata> {
+  const event = await getEvent(params.slug);
+  if (!event) return { title: "活动不存在 — 虾聊活动" };
+
+  // Build description: time + location
+  const descParts: string[] = [];
+  if (event.start_time) {
+    const d = new Date(event.start_time);
+    const datePart = d.toLocaleDateString("zh-CN", {
+      month: "long", day: "numeric", weekday: "short",
+    });
+    const timePart = d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+    descParts.push(`${datePart} ${timePart}`);
+  }
+  if (event.location_name) descParts.push(event.location_name);
+  const description = descParts.join(" · ") || "虾聊 · Events";
+
+  const eventUrl = `${SITE_URL}/e/${event.slug}`;
+  // Use the generated poster as OG image — it contains cover, title and branding
+  const ogImage = `${API_BASE}/api/v1/events/${event.slug}/poster`;
+
+  return {
+    title: `${event.title} — 虾聊活动`,
+    description,
+    openGraph: {
+      title: event.title,
+      description,
+      url: eventUrl,
+      siteName: "虾聊 · Events",
+      locale: "zh_CN",
+      type: "website",
+      images: [{ url: ogImage, width: 750, alt: event.title }],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: event.title,
+      description,
+      images: [ogImage],
+    },
+  };
+}
+
 export default async function EventDetailPage({
   params,
 }: {
@@ -60,13 +109,26 @@ export default async function EventDetailPage({
     <div className="mx-auto max-w-3xl px-4 py-8">
       {/* Cover */}
       <div
-        className="relative h-56 w-full rounded-2xl overflow-hidden sm:h-72"
+        className="relative w-full aspect-video rounded-2xl overflow-hidden"
         style={coverStyle}
       >
         <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
+        {/* 左上角 logo — 始终显示 */}
+        <div className="absolute top-0 left-0 p-3">
+          <div className="h-10 w-10 rounded-xl overflow-hidden opacity-90">
+            <img src="/logo-center.png" alt="虾聊" className="h-full w-full scale-110" />
+          </div>
+        </div>
         {!hasCover && (
-          <div className="absolute bottom-0 left-0 right-0 p-6">
-            <div className="flex items-center gap-2 mb-2">
+          <>
+            {/* 无封面时标题居中显示 */}
+            <div className="absolute inset-0 flex items-center justify-center p-8">
+              <h1 className={`text-3xl font-bold drop-shadow sm:text-4xl text-center ${titleColor}`}>
+                {event.title}
+              </h1>
+            </div>
+            {/* 标签放右下角 */}
+            <div className="absolute bottom-0 right-0 p-4 flex items-center gap-2">
               <Badge className={`${badgeBg} backdrop-blur-sm text-xs`}>
                 {typeLabels[event.event_type] || event.event_type}
               </Badge>
@@ -74,8 +136,7 @@ export default async function EventDetailPage({
                 <Badge className={`${badgeBg} backdrop-blur-sm text-xs`}>需审批</Badge>
               )}
             </div>
-            <h1 className={`text-2xl font-bold drop-shadow sm:text-3xl ${titleColor}`}>{event.title}</h1>
-          </div>
+          </>
         )}
       </div>
 
@@ -161,30 +222,11 @@ export default async function EventDetailPage({
         </div>
 
         {/* Registration + Share */}
-        <div className="rounded-xl border bg-card p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">
-                {event.registration_count || 0} 人已报名
-                {event.capacity && ` · 限 ${event.capacity} 人`}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <SharePosterButton slug={event.slug} title={event.title} />
-              <RegisterButton
-                slug={event.slug}
-                questions={event.custom_questions}
-                eventStatus={event.status}
-                registrationDeadline={event.registration_deadline}
-                capacity={event.capacity}
-                registrationCount={event.registration_count}
-              />
-            </div>
-          </div>
-
+        <div className="rounded-xl border bg-card p-5 space-y-4">
           {/* Attendees preview */}
           {event.attendees_preview && event.attendees_preview.length > 0 && (
-            <div className="flex items-center gap-2 pt-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">已报名</span>
               <div className="flex -space-x-2">
                 {event.attendees_preview.slice(0, 8).map((a: { nickname: string; avatar_url: string | null }, i: number) => (
                   a.avatar_url ? (
@@ -198,11 +240,22 @@ export default async function EventDetailPage({
               </div>
               {(event.registration_count || 0) > 8 && (
                 <span className="text-xs text-muted-foreground">
-                  +{(event.registration_count || 0) - 8} 人
+                  +{(event.registration_count || 0) - 8}
                 </span>
               )}
             </div>
           )}
+
+          {/* 报名状态/操作行（始终在卡片底部） */}
+          <RegisterButton
+            slug={event.slug}
+            title={event.title}
+            questions={event.custom_questions}
+            eventStatus={event.status}
+            registrationDeadline={event.registration_deadline}
+            capacity={event.capacity}
+            registrationCount={event.registration_count}
+          />
         </div>
 
         {/* Host & Co-Hosts */}

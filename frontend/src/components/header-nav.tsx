@@ -2,6 +2,13 @@
 
 import { useUser } from "@/contexts/user-context";
 
+function shortName(nickname: string | null): string {
+  if (!nickname) return "我";
+  // 手机号自动生成的昵称"用户XXXX" → 只显示"XXXX"
+  if (/^用户\d+$/.test(nickname)) return nickname.slice(2);
+  return nickname.length > 10 ? nickname.slice(0, 10) + "…" : nickname;
+}
+
 export function HeaderNav() {
   const { user, loading, logout } = useUser();
 
@@ -42,7 +49,7 @@ export function HeaderNav() {
             {(user.nickname || "U")[0]}
           </div>
         )}
-        <span className="hidden text-sm sm:inline">{user.nickname}</span>
+        <span className="hidden text-sm sm:inline">{shortName(user.nickname)}</span>
         <button
           onClick={logout}
           className="text-xs text-muted-foreground hover:text-foreground transition-colors"

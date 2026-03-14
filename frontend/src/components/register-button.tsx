@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
+import { SharePosterButton } from "./share-poster-button";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
@@ -27,6 +27,7 @@ interface RegistrationInfo {
 
 interface Props {
   slug: string;
+  title?: string;
   questions?: CustomQuestion[] | null;
   eventStatus?: string;
   registrationDeadline?: string | null;
@@ -34,7 +35,7 @@ interface Props {
   registrationCount?: number | null;
 }
 
-export function RegisterButton({ slug, questions, eventStatus, registrationDeadline, capacity, registrationCount }: Props) {
+export function RegisterButton({ slug, title = "", questions, eventStatus, registrationDeadline, capacity, registrationCount }: Props) {
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -77,8 +78,21 @@ export function RegisterButton({ slug, questions, eventStatus, registrationDeadl
 
   const isNotPublished = eventStatus && eventStatus !== "published";
 
+  const statsText = `${registrationCount || 0} 人已报名${capacity ? ` · 限 ${capacity} 人` : ""}`;
+
+  const ShareRow = () => (
+    <div className="flex items-center gap-2">
+      <SharePosterButton slug={slug} title={title} />
+    </div>
+  );
+
   if (checking) {
-    return <div className="h-10 w-24 animate-pulse rounded-lg bg-muted" />;
+    return (
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">{statsText}</p>
+        <div className="h-9 w-24 animate-pulse rounded-lg bg-muted" />
+      </div>
+    );
   }
 
   if (existingReg) {
@@ -93,61 +107,135 @@ export function RegisterButton({ slug, questions, eventStatus, registrationDeadl
 
     if (existingReg.status === "cancelled") {
       return (
-        <div className="flex flex-col items-end gap-1">
-          <Badge variant="outline" className="text-xs">{label}</Badge>
-          <Button size="lg" onClick={() => { setExistingReg(null); setResult(null); }}>
-            重新报名
-          </Button>
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">{statsText}</p>
+            <Button size="sm" onClick={() => { setExistingReg(null); setResult(null); }}>
+              重新报名
+            </Button>
+          </div>
+          <ShareRow />
         </div>
       );
     }
 
+    const statusColor: Record<string, string> = {
+      approved: "text-emerald-600",
+      pending: "text-amber-600",
+      waitlisted: "text-blue-600",
+      declined: "text-destructive",
+    };
+    const colorClass = statusColor[existingReg.status] || "text-muted-foreground";
+    const isCheckedIn = !!existingReg.checked_in_at;
+    const statusText = isCheckedIn ? "✓ 已签到" : `✓ ${label}`;
+
+    if (existingReg.status === "approved") {
+      return (
+        <div className="flex flex-col gap-3">
+          {/* 统计 + 签到码（右上角主入口） */}
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">{statsText}</p>
+            {!isCheckedIn ? (
+              <Link href={`/checkin/${existingReg.qr_code_token}`}>
+                <Button size="lg" className="font-semibold px-8">签到码</Button>
+              </Link>
+            ) : (
+              <span className={`text-sm font-medium ${colorClass}`}>{statusText}</span>
+            )}
+          </div>
+          {/* 状态标签 */}
+          {!isCheckedIn && (
+            <span className={`text-sm font-medium ${colorClass}`}>{statusText}</span>
+          )}
+          {/* 分享 + 取消报名 */}
+          <div className="flex items-center justify-between gap-3">
+            <ShareRow />
+            {!isCheckedIn && (
+              <button
+                onClick={handleCancelRegistration}
+                disabled={cancelLoading}
+                className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+              >
+                {cancelLoading ? "取消中..." : "取消报名"}
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // pending / waitlisted / declined
     return (
-      <div className="flex flex-col items-end gap-2">
-        <div className="flex items-center gap-2">
-          <Badge variant={existingReg.status === "approved" ? "default" : "secondary"}>
-            {existingReg.checked_in_at ? "已签到" : label}
-          </Badge>
-          {existingReg.status === "approved" && !existingReg.checked_in_at && (
-            <Link href={`/checkin/${existingReg.qr_code_token}`}>
-              <Button variant="outline" size="sm">签到码</Button>
-            </Link>
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">{statsText}</p>
+        </div>
+        <span className={`text-sm font-medium ${colorClass}`}>{statusText}</span>
+        <div className="flex items-center justify-between gap-3">
+          <ShareRow />
+          {existingReg.status !== "declined" && !isCheckedIn && (
+            <button
+              onClick={handleCancelRegistration}
+              disabled={cancelLoading}
+              className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+            >
+              {cancelLoading ? "取消中..." : "取消报名"}
+            </button>
           )}
         </div>
-        {existingReg.status !== "declined" && !existingReg.checked_in_at && (
-          <button
-            onClick={handleCancelRegistration}
-            disabled={cancelLoading}
-            className="text-xs text-muted-foreground hover:text-destructive transition-colors"
-          >
-            {cancelLoading ? "取消中..." : "取消报名"}
-          </button>
-        )}
       </div>
     );
   }
 
   if (isNotPublished) {
     return (
-      <Button variant="secondary" disabled className="cursor-default">
-        {{ draft: "未发布", cancelled: "已取消", completed: "已结束" }[eventStatus!] || eventStatus}
-      </Button>
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">{statsText}</p>
+          <Button variant="secondary" disabled className="cursor-default">
+            {{ draft: "未发布", cancelled: "已取消", completed: "已结束" }[eventStatus!] || eventStatus}
+          </Button>
+        </div>
+        <ShareRow />
+      </div>
     );
   }
 
   if (isDeadlinePassed) {
-    return <Button variant="secondary" disabled className="cursor-default">报名已截止</Button>;
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">{statsText}</p>
+          <Button variant="secondary" disabled className="cursor-default">报名已截止</Button>
+        </div>
+        <ShareRow />
+      </div>
+    );
   }
 
   if (isFull) {
-    return <Button variant="secondary" disabled className="cursor-default">名额已满</Button>;
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">{statsText}</p>
+          <Button variant="secondary" disabled className="cursor-default">名额已满</Button>
+        </div>
+        <ShareRow />
+      </div>
+    );
   }
 
   if (result?.success) {
     return (
-      <Button variant="secondary" disabled className="cursor-default">
-        {result.message}
-      </Button>
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">{statsText}</p>
+          <Button variant="secondary" disabled className="cursor-default">
+            {result.message}
+          </Button>
+        </div>
+        <ShareRow />
+      </div>
     );
   }
 
@@ -324,13 +412,20 @@ export function RegisterButton({ slug, questions, eventStatus, registrationDeadl
 
   return (
     <>
-      <div className="flex flex-col items-end gap-1">
-        <Button onClick={handleClick} disabled={loading} size="lg">
-          {loading ? "报名中..." : "立即报名"}
-        </Button>
-        {result && !result.success && (
-          <p className="text-xs text-destructive">{result.message}</p>
-        )}
+      <div className="flex flex-col gap-3">
+        {/* 统计 + 立即报名（右上角主入口） */}
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">{statsText}</p>
+          <div className="flex flex-col items-end gap-1">
+            <Button onClick={handleClick} disabled={loading} size="lg" className="font-semibold">
+              {loading ? "报名中..." : "立即报名"}
+            </Button>
+            {result && !result.success && (
+              <p className="text-xs text-destructive">{result.message}</p>
+            )}
+          </div>
+        </div>
+        <ShareRow />
       </div>
 
       {showPhoneModal && (

@@ -73,8 +73,8 @@ export function ImageUpload({ value, onChange, className, themeStyle }: ImageUpl
     <div className={className}>
       <label className="text-sm font-medium">活动封面</label>
       <div
-        className={`mt-1.5 relative flex items-center justify-center rounded-xl border-2 border-dashed cursor-pointer overflow-hidden transition-colors hover:border-primary/50`}
-        style={{ height: 200, ...(hasThemeBg ? themeStyle : {}) }}
+        className={`mt-1.5 relative w-full aspect-video flex items-center justify-center rounded-xl border-2 border-dashed cursor-pointer overflow-hidden transition-colors hover:border-primary/50`}
+        style={{ ...(hasThemeBg ? themeStyle : {}) }}
         onClick={() => inputRef.current?.click()}
         onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
         onDrop={(e) => {

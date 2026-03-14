@@ -194,6 +194,39 @@ async def get_me(user: User = Depends(get_current_user)):
     }
 
 
+@router.patch("/me")
+async def update_me(
+    data: dict,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新当前用户昵称 / 头像"""
+    nickname = data.get("nickname", "").strip() if isinstance(data.get("nickname"), str) else None
+    avatar_url = data.get("avatar_url", "").strip() if isinstance(data.get("avatar_url"), str) else None
+
+    if nickname is not None:
+        if len(nickname) < 1:
+            raise HTTPException(status_code=400, detail="昵称不能为空")
+        if len(nickname) > 50:
+            raise HTTPException(status_code=400, detail="昵称最多 50 个字符")
+        user.nickname = nickname
+
+    if avatar_url is not None:
+        user.avatar_url = avatar_url or None  # 空字符串 → 清除头像
+
+    db.add(user)
+    await db.commit()
+
+    return {
+        "success": True,
+        "data": {
+            "id": str(user.id),
+            "nickname": user.nickname,
+            "avatar_url": user.avatar_url,
+        },
+    }
+
+
 @router.post("/me/phone/send-code")
 async def send_bind_phone_code(
     data: PhoneSendCodeRequest,

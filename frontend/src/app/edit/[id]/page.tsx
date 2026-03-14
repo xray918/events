@@ -106,7 +106,7 @@ export default function EditEventPage() {
     return <div className="mx-auto max-w-2xl px-4 py-10"><p className="text-muted-foreground">加载中...</p></div>;
   }
 
-  async function handleAIGenerate() {
+  async function handleAIGenerate(extraPrompt?: string) {
     if (!form.title.trim()) {
       setError("请先填写活动名称");
       return;
@@ -124,6 +124,7 @@ export default function EditEventPage() {
           location: form.location_name || undefined,
           start_time: form.start_date ? `${form.start_date} ${form.start_time}` : undefined,
           existing_description: form.description || undefined,
+          user_prompt: extraPrompt || undefined,
         }),
       });
       const data = await res.json();

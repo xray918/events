@@ -3,13 +3,21 @@
 import { useState, useRef, useCallback } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { EventDescription } from "@/components/event-description";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
 interface DescriptionEditorProps {
   value: string;
   onChange: (value: string) => void;
-  onAIGenerate?: () => void;
+  onAIGenerate?: (extraPrompt?: string) => void;
   aiLoading?: boolean;
   placeholder?: string;
   rows?: number;
@@ -23,8 +31,11 @@ export function DescriptionEditor({
   placeholder = "详细介绍你的活动...（支持 Markdown 格式）",
   rows = 8,
 }: DescriptionEditorProps) {
+  const [tab, setTab] = useState<"edit" | "preview">("edit");
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [aiDialogOpen, setAiDialogOpen] = useState(false);
+  const [aiExtraPrompt, setAiExtraPrompt] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -135,45 +146,87 @@ export function DescriptionEditor({
 
   return (
     <div>
+      {/* 标题行：左侧 Tab 切换，右侧工具按钮 */}
       <div className="flex items-center justify-between">
-        <label className="text-sm font-medium">活动描述</label>
-        <div className="flex items-center gap-2">
-          <Button
+        <div className="flex items-center gap-0.5">
+          <label className="text-sm font-medium mr-3">活动描述</label>
+          <button
             type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            className="text-xs"
+            onClick={() => setTab("edit")}
+            className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+              tab === "edit"
+                ? "bg-foreground text-background"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
           >
-            {uploading ? "上传中..." : "🖼️ 插入图片"}
-          </Button>
-          {onAIGenerate && (
+            编辑
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("preview")}
+            className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+              tab === "preview"
+                ? "bg-foreground text-background"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            预览
+          </button>
+        </div>
+
+        {tab === "edit" && (
+          <div className="flex items-center gap-2">
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={onAIGenerate}
-              disabled={aiLoading}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
               className="text-xs"
             >
-              {aiLoading ? "AI 生成中..." : "✨ AI 生成"}
+              {uploading ? "上传中..." : "🖼️ 插入图片"}
             </Button>
-          )}
-        </div>
+            {onAIGenerate && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setAiDialogOpen(true)}
+                disabled={aiLoading}
+                className="text-xs"
+              >
+                {aiLoading ? "AI 生成中..." : "✨ AI 生成"}
+              </Button>
+            )}
+          </div>
+        )}
       </div>
 
-      <Textarea
-        ref={textareaRef}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onPaste={handlePaste}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        placeholder={placeholder}
-        rows={rows}
-        className="mt-1.5 font-mono text-sm"
-      />
+      {/* 编辑区 */}
+      {tab === "edit" && (
+        <Textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onPaste={handlePaste}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          placeholder={placeholder}
+          rows={rows}
+          className="mt-1.5 font-mono text-sm"
+        />
+      )}
+
+      {/* 预览区 */}
+      {tab === "preview" && (
+        <div className="mt-1.5 min-h-32 rounded-lg border border-input bg-muted/30 px-3 py-2.5">
+          {value.trim() ? (
+            <EventDescription content={value} />
+          ) : (
+            <p className="text-sm text-muted-foreground">暂无内容，请先在编辑模式下输入描述。</p>
+          )}
+        </div>
+      )}
 
       <input
         ref={fileInputRef}
@@ -189,9 +242,54 @@ export function DescriptionEditor({
 
       {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
 
-      <p className="mt-1 text-xs text-muted-foreground">
-        支持 Markdown：**加粗**、- 列表、![图片](url)。可直接粘贴或拖拽图片到编辑区。
-      </p>
+      {tab === "edit" && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          支持 Markdown：**加粗**、- 列表、![图片](url)。可直接粘贴或拖拽图片到编辑区。
+        </p>
+      )}
+
+      {/* AI 生成弹窗 */}
+      {onAIGenerate && (
+        <Dialog open={aiDialogOpen} onOpenChange={setAiDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>✨ AI 生成活动描述</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <p className="text-sm text-muted-foreground">
+                AI 将根据活动名称、类型、地点等信息自动生成描述。你也可以在下方补充额外要求。
+              </p>
+              <Textarea
+                value={aiExtraPrompt}
+                onChange={(e) => setAiExtraPrompt(e.target.value)}
+                placeholder="可选：补充描述风格或特别说明，如「语气活泼」「强调技术深度」「面向初学者」……"
+                rows={4}
+                className="text-sm"
+              />
+            </div>
+            <DialogFooter className="gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => { setAiDialogOpen(false); setAiExtraPrompt(""); }}
+              >
+                取消
+              </Button>
+              <Button
+                type="button"
+                disabled={aiLoading}
+                onClick={() => {
+                  setAiDialogOpen(false);
+                  onAIGenerate(aiExtraPrompt.trim() || undefined);
+                  setAiExtraPrompt("");
+                }}
+              >
+                {aiLoading ? "生成中..." : "开始生成"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

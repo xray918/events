@@ -5,9 +5,18 @@ import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useRequireAuth } from "@/hooks/use-require-auth";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
+
+interface UserProfile {
+  id: string;
+  nickname: string | null;
+  avatar_url: string | null;
+  phone: string | null;
+  email: string | null;
+}
 
 interface Registration {
   id: string;
@@ -44,19 +53,27 @@ export default function MyPage() {
   const [registrations, setRegistrations] = useState<Registration[]>([]);
   const [myEvents, setMyEvents] = useState<MyEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [editingNickname, setEditingNickname] = useState(false);
+  const [nicknameInput, setNicknameInput] = useState("");
+  const [nicknameSaving, setNicknameSaving] = useState(false);
+  const [nicknameError, setNicknameError] = useState("");
 
   useEffect(() => {
     if (!authenticated) return;
     async function load() {
       try {
-        const [regRes, evtRes] = await Promise.all([
+        const [regRes, evtRes, meRes] = await Promise.all([
           fetch(`${API}/api/v1/registrations/me`, { credentials: "include" }),
           fetch(`${API}/api/v1/events/mine`, { credentials: "include" }),
+          fetch(`${API}/api/v1/auth/me`, { credentials: "include" }),
         ]);
         const regData = await regRes.json();
         const evtData = await evtRes.json();
+        const meData = await meRes.json();
         if (regData.data) setRegistrations(regData.data);
         if (evtData.data) setMyEvents(evtData.data);
+        if (meData.data) setProfile(meData.data);
       } catch {
         // ignore
       } finally {
@@ -65,6 +82,34 @@ export default function MyPage() {
     }
     load();
   }, [authenticated]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function saveNickname() {
+    if (!nicknameInput.trim()) {
+      setNicknameError("昵称不能为空");
+      return;
+    }
+    setNicknameSaving(true);
+    setNicknameError("");
+    try {
+      const res = await fetch(`${API}/api/v1/auth/me`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ nickname: nicknameInput.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setProfile((p) => p ? { ...p, nickname: data.data.nickname } : p);
+        setEditingNickname(false);
+      } else {
+        setNicknameError(data.detail || "保存失败");
+      }
+    } catch {
+      setNicknameError("网络错误");
+    } finally {
+      setNicknameSaving(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -77,6 +122,52 @@ export default function MyPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-10">
       <h1 className="text-3xl font-bold tracking-tight">我的活动</h1>
+
+      {/* 个人资料 */}
+      {profile && (
+        <div className="mt-4 rounded-xl border bg-card p-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            {profile.avatar_url ? (
+              <img src={profile.avatar_url} alt="" className="h-10 w-10 rounded-full" />
+            ) : (
+              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-muted text-sm font-medium">
+                {(profile.nickname || "?")[0]}
+              </span>
+            )}
+            <div>
+              {editingNickname ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={nicknameInput}
+                    onChange={(e) => setNicknameInput(e.target.value)}
+                    className="h-7 w-40 text-sm"
+                    autoFocus
+                    onKeyDown={(e) => { if (e.key === "Enter") saveNickname(); if (e.key === "Escape") setEditingNickname(false); }}
+                  />
+                  <Button size="sm" onClick={saveNickname} disabled={nicknameSaving} className="h-7 px-2 text-xs">
+                    {nicknameSaving ? "保存中…" : "保存"}
+                  </Button>
+                  <button onClick={() => setEditingNickname(false)} className="text-xs text-muted-foreground hover:text-foreground">取消</button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">{profile.nickname || "未设置昵称"}</span>
+                  <button
+                    onClick={() => { setNicknameInput(profile.nickname || ""); setEditingNickname(true); setNicknameError(""); }}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    修改
+                  </button>
+                </div>
+              )}
+              {nicknameError && <p className="text-xs text-destructive mt-0.5">{nicknameError}</p>}
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {profile.phone || profile.email || ""}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="mt-6 flex gap-3">
         <button

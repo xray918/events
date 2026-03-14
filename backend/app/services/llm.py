@@ -32,6 +32,7 @@ async def generate_event_description(
     location: Optional[str] = None,
     start_time: Optional[str] = None,
     existing_description: Optional[str] = None,
+    user_prompt: Optional[str] = None,
 ) -> Optional[str]:
     """Call OpenRouter LLM to generate a Markdown event description."""
     if not settings.openrouter_api_key:
@@ -47,6 +48,8 @@ async def generate_event_description(
         user_msg_parts.append(f"\n已有描述（请在此基础上润色）：\n{existing_description}")
     else:
         user_msg_parts.append("\n请根据以上信息生成活动描述。")
+    if user_prompt:
+        user_msg_parts.append(f"\n额外要求：{user_prompt}")
 
     user_msg = "\n".join(user_msg_parts)
 

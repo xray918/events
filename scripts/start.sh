@@ -60,27 +60,37 @@ echo ""
 # 3. 停旧启新（这里才中断服务，尽快完成）
 # ---------------------------------------------------------------------------
 
-# --- 停止旧后端 ---
+# --- 停止旧进程 (多策略确保彻底清理) ---
 echo "🛑 停止旧进程..."
-if [ -f /tmp/events-backend.pid ]; then
-    OLD_PID=$(cat /tmp/events-backend.pid)
-    if kill -0 "$OLD_PID" 2>/dev/null; then
-        kill "$OLD_PID" && echo "  后端进程 $OLD_PID 已停止"
-    fi
-    rm -f /tmp/events-backend.pid
-fi
 
-if [ -f /tmp/events-frontend.pid ]; then
-    OLD_PID=$(cat /tmp/events-frontend.pid)
-    if kill -0 "$OLD_PID" 2>/dev/null; then
-        kill "$OLD_PID" && echo "  前端进程 $OLD_PID 已停止"
+kill_by_pid_file() {
+    local pidfile="$1" label="$2"
+    if [ -f "$pidfile" ]; then
+        local pid=$(cat "$pidfile")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+            echo "  $label 进程组 $pid 已发送 TERM"
+        fi
+        rm -f "$pidfile"
     fi
-    rm -f /tmp/events-frontend.pid
-fi
+}
 
-lsof -ti:8001 2>/dev/null | xargs -r kill -9 2>/dev/null || true
-lsof -ti:3001 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+kill_by_pid_file /tmp/events-backend.pid "后端"
+kill_by_pid_file /tmp/events-frontend.pid "前端"
 sleep 1
+
+# 按端口强杀残留 (lsof / fuser / ss 多重保障)
+for port in 8001 3001; do
+    lsof -ti:"$port" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+    fuser -k "$port"/tcp 2>/dev/null || true
+done
+
+# 按进程名杀孤儿 next-server
+pkill -9 -f 'next-server' 2>/dev/null || true
+sleep 1
+
+echo "  端口 8001: $(ss -tlnp | grep -c ':8001' || echo 0) 个监听"
+echo "  端口 3001: $(ss -tlnp | grep -c ':3001' || echo 0) 个监听"
 
 # --- 立即启动新后端 ---
 echo ""
@@ -105,7 +115,7 @@ done
 echo ""
 echo "🚀 启动前端 (端口 3001)..."
 cd "$FRONTEND_DIR"
-nohup npm start -- -p 3001 \
+PORT=3001 nohup npx next start -p 3001 \
     > /tmp/events-frontend.log 2>&1 &
 echo $! > /tmp/events-frontend.pid
 echo "  PID: $(cat /tmp/events-frontend.pid)"

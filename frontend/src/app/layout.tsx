@@ -19,8 +19,11 @@ export default function RootLayout({
         <UserProvider>
           <header className="sticky top-0 z-50 w-full border-b bg-background/80 backdrop-blur-sm">
             <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
-              <a href="/" className="text-lg font-semibold tracking-tight">
-                Events
+              <a href="/" className="flex items-center gap-2">
+                <div className="h-9 w-9 rounded-lg overflow-hidden flex-shrink-0">
+                  <img src="/logo-center.png" alt="虾聊" className="h-full w-full scale-110" />
+                </div>
+                <span className="text-lg font-semibold tracking-tight">虾聊·Events</span>
               </a>
               <HeaderNav />
             </div>

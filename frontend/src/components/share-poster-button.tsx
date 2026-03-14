@@ -13,10 +13,11 @@ interface SharePosterButtonProps {
 export function SharePosterButton({ slug, title }: SharePosterButtonProps) {
   const [showPoster, setShowPoster] = useState(false);
   const [copied, setCopied] = useState(false);
-  const posterUrl = `${API}/api/v1/events/${slug}/poster?v=${Date.now()}`;
+  const [posterKey] = useState(() => Date.now());
+  const posterUrl = `${API}/api/v1/events/${slug}/poster?v=${posterKey}`;
   const eventUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/e/${slug}`;
 
-  async function handleForward() {
+  async function handleShareLink() {
     if (navigator.share) {
       try {
         await navigator.share({ title, text: `邀请你参加活动「${title}」`, url: eventUrl });
@@ -26,7 +27,7 @@ export function SharePosterButton({ slug, title }: SharePosterButtonProps) {
       }
     }
     try {
-      await navigator.clipboard.writeText(`${title}\n${eventUrl}`);
+      await navigator.clipboard.writeText(eventUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch { /* ignore */ }
@@ -34,14 +35,25 @@ export function SharePosterButton({ slug, title }: SharePosterButtonProps) {
 
   return (
     <>
+      {/* 分享链接 */}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={handleShareLink}
+      >
+        {copied ? "✓ 已复制" : "分享链接"}
+      </Button>
+
+      {/* 分享海报 */}
       <Button
         variant="outline"
         size="sm"
         onClick={() => setShowPoster(true)}
       >
-        分享
+        分享海报
       </Button>
 
+      {/* 海报弹窗 */}
       {showPoster && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
@@ -70,14 +82,6 @@ export function SharePosterButton({ slug, title }: SharePosterButtonProps) {
                 onClick={() => setShowPoster(false)}
               >
                 关闭
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="flex-1"
-                onClick={handleForward}
-              >
-                {copied ? "已复制链接" : "转发"}
               </Button>
               <Button
                 size="sm"
