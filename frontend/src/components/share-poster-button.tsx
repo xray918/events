@@ -86,14 +86,25 @@ export function SharePosterButton({ slug, title }: SharePosterButtonProps) {
               <Button
                 size="sm"
                 className="flex-1"
-                onClick={() => {
+                onClick={async () => {
+                  if (navigator.share) {
+                    try {
+                      const res = await fetch(posterUrl);
+                      const blob = await res.blob();
+                      const file = new File([blob], `${title}-海报.png`, { type: blob.type });
+                      await navigator.share({ title, files: [file] });
+                      return;
+                    } catch {
+                      /* fallback to download */
+                    }
+                  }
                   const a = document.createElement("a");
                   a.href = posterUrl;
                   a.download = `${title}-海报.png`;
                   a.click();
                 }}
               >
-                下载海报
+                转发
               </Button>
             </div>
           </div>
