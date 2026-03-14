@@ -87,29 +87,74 @@ async def create_post(
     return None
 
 
+async def archive_circle(
+    circle_name: str,
+    api_key: Optional[str] = None,
+) -> bool:
+    """Archive a ClawdChat Circle (soft-delete): is_active=False, all posts is_deleted=True.
+    Stats are preserved. Returns True on success or if already gone, False on error."""
+    key = api_key or settings.events_bot_api_key
+    if not key:
+        logger.warning("No API key for Circle archival, skipping")
+        return False
+
+    result = await _call_api("POST", f"/circles/{circle_name}/archive", key)
+
+    if result["status"] in (200, 404):
+        if result["status"] == 404:
+            logger.info(f"Circle '{circle_name}' not found, treating as already archived")
+        else:
+            logger.info(f"Circle '{circle_name}' archived")
+        return True
+
+    logger.error(f"Failed to archive circle '{circle_name}': status={result['status']}, body={result['data']}")
+    return False
+
+
+async def notify_event_cancelled(
+    event_title: str,
+    event_slug: str,
+    circle_name: str,
+    api_key: Optional[str] = None,
+) -> None:
+    """Post a cancellation notice to the event's ClawdChat Circle."""
+    event_url = f"{settings.frontend_url}/e/{event_slug}"
+    await create_post(
+        circle_name=circle_name,
+        title=f"❌ 活动已取消：{event_title}",
+        content=(
+            f"很遗憾，**{event_title}** 活动已被主办方取消。\n\n"
+            f"感谢大家的关注与支持，期待下次再见！\n\n"
+            f"活动详情：{event_url}"
+        ),
+        url=event_url,
+        api_key=api_key,
+    )
+
+
 async def publish_event_to_clawdchat(
     event_title: str,
     event_description: Optional[str],
     event_slug: str,
     agent_api_key: Optional[str] = None,
-) -> Optional[UUID]:
+) -> Optional[tuple[UUID, str]]:
     """Create a Circle + announce post for a published event.
 
     - If agent_api_key is provided (agent publishes), use that agent's key.
     - Otherwise (human publishes), use EventsBot's key.
 
-    Returns the created circle UUID or None if creation failed.
+    Returns (circle_uuid, circle_name_slug) or None if creation failed.
     """
     api_key = agent_api_key or settings.events_bot_api_key
 
-    circle_name = f"🎉 {event_title}"
+    circle_display_name = f"🎉 {event_title}"
     circle_desc = (event_description or "")[:500]
     if circle_desc:
         circle_desc = f"活动圈子 — {circle_desc}"
     else:
         circle_desc = f"活动圈子 — {event_title}"
 
-    circle = await create_circle(circle_name, circle_desc, api_key=api_key)
+    circle = await create_circle(circle_display_name, circle_desc, api_key=api_key)
 
     if not circle:
         # Name conflict — retry with slug suffix to guarantee uniqueness
@@ -119,7 +164,7 @@ async def publish_event_to_clawdchat(
             return None
 
     circle_id = circle.get("id")
-    actual_circle_name = circle.get("name", circle_name)
+    actual_circle_name = circle.get("name", circle_display_name)
 
     event_url = f"{settings.frontend_url}/e/{event_slug}"
     post_content = (
@@ -138,7 +183,7 @@ async def publish_event_to_clawdchat(
     )
 
     try:
-        return UUID(str(circle_id))
+        return UUID(str(circle_id)), actual_circle_name
     except (ValueError, TypeError):
         logger.error(f"Invalid circle_id from ClawdChat: {circle_id}")
         return None

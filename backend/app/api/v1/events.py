@@ -19,13 +19,18 @@ from app.models.event import (
 from app.schemas.event import EventCreate, EventUpdate, EventResponse, EventListResponse, RegisterRequest
 from app.core.deps import get_current_user, get_optional_agent, get_optional_user
 from app.core.security import generate_qr_token, utc_now
-from app.services.clawdchat import publish_event_to_clawdchat as _publish_to_clawdchat
+from app.services.clawdchat import (
+    publish_event_to_clawdchat as _publish_to_clawdchat,
+    archive_circle as _archive_circle,
+    notify_event_cancelled as _notify_event_cancelled,
+)
 from app.services.llm import generate_event_description
 
 router = APIRouter()
 
 
 async def _create_event_circle(event_title, event_description, event_slug, agent_api_key=None):
+    """Returns (circle_id, circle_name) tuple or None."""
     return await _publish_to_clawdchat(event_title, event_description, event_slug, agent_api_key)
 
 
@@ -644,14 +649,14 @@ async def publish_event(
                 agent_api_key = parts[1]
 
         try:
-            circle_id = await _create_event_circle(
+            result = await _create_event_circle(
                 event_title=event.title,
                 event_description=event.description,
                 event_slug=event.slug,
                 agent_api_key=agent_api_key,
             )
-            if circle_id:
-                event.circle_id = circle_id
+            if result:
+                event.circle_id, event.circle_name = result
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Circle creation failed for event {event_id}: {e}")
@@ -691,14 +696,14 @@ async def sync_to_clawdchat(
             agent_api_key = parts[1]
 
     try:
-        circle_id = await _create_event_circle(
+        result = await _create_event_circle(
             event_title=event.title,
             event_description=event.description,
             event_slug=event.slug,
             agent_api_key=agent_api_key,
         )
-        if circle_id:
-            event.circle_id = circle_id
+        if result:
+            event.circle_id, event.circle_name = result
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Sync to ClawdChat failed for event {event_id}: {e}")
@@ -731,6 +736,19 @@ async def cancel_event(
         raise HTTPException(status_code=403, detail="无权操作此活动")
 
     event.status = "cancelled"
+
+    # Notify ClawdChat circle about cancellation (best-effort)
+    if event.circle_name:
+        try:
+            await _notify_event_cancelled(
+                event_title=event.title,
+                event_slug=event.slug,
+                circle_name=event.circle_name,
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to post cancellation notice for event {event_id}: {e}")
+
     return {"success": True, "data": {"id": str(event.id), "status": event.status}}
 
 
@@ -755,6 +773,14 @@ async def delete_event(
         raise HTTPException(status_code=403, detail="无权操作此活动")
     if event.status not in ("draft", "cancelled"):
         raise HTTPException(status_code=400, detail="只能删除草稿或已取消的活动")
+
+    # Archive ClawdChat circle (soft-delete, best-effort)
+    if event.circle_name:
+        try:
+            await _archive_circle(event.circle_name)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to archive ClawdChat circle '{event.circle_name}': {e}")
 
     from sqlalchemy import delete
     # Delete in FK-dependency order: logs → blasts → winners → rankings → registrations → questions → staff → event

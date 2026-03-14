@@ -589,3 +589,136 @@ async def test_scan_by_key_wrong_event(client: AsyncClient):
         })
         assert resp.status_code == 400
         assert "不属于当前活动" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# ClawdChat circle sync on cancel / delete
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cancel_event_posts_notice_to_clawdchat(client: AsyncClient):
+    """Cancelling a published event (with circle_name) posts a cancellation notice."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000060",
+            "code": "123456",
+        })
+        cookies = {"events_token": resp.cookies.get("events_token")}
+
+    resp = await client.post("/api/v1/events", json={
+        "title": "Cancel Circle Test",
+        "start_time": "2026-12-10T10:00:00+08:00",
+    }, cookies=cookies)
+    event_id = resp.json()["data"]["id"]
+
+    # Publish with mocked circle (returns circle_id + circle_name tuple)
+    import uuid
+    fake_circle_id = uuid.uuid4()
+    fake_circle_name = "cancel-circle-test"
+
+    with patch("app.api.v1.events._create_event_circle", new_callable=AsyncMock) as mock_create:
+        mock_create.return_value = (fake_circle_id, fake_circle_name)
+        await client.post(f"/api/v1/events/{event_id}/publish", cookies=cookies)
+
+    # Cancel — should call notify_event_cancelled
+    with patch("app.api.v1.events._notify_event_cancelled", new_callable=AsyncMock) as mock_notify:
+        resp = await client.post(f"/api/v1/events/{event_id}/cancel", cookies=cookies)
+        assert resp.status_code == 200
+        assert resp.json()["data"]["status"] == "cancelled"
+        mock_notify.assert_called_once()
+        call_kwargs = mock_notify.call_args.kwargs
+        assert call_kwargs["circle_name"] == fake_circle_name
+        assert "Cancel Circle Test" in call_kwargs["event_title"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_event_without_circle_skips_notify(client: AsyncClient):
+    """Cancelling an event that was never synced to ClawdChat does not call notify."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000061",
+            "code": "123456",
+        })
+        cookies = {"events_token": resp.cookies.get("events_token")}
+
+    resp = await client.post("/api/v1/events", json={
+        "title": "No Circle Cancel Test",
+        "start_time": "2026-12-11T10:00:00+08:00",
+    }, cookies=cookies)
+    event_id = resp.json()["data"]["id"]
+
+    # Publish without circle
+    with patch("app.api.v1.events._create_event_circle", new_callable=AsyncMock) as mock_create:
+        mock_create.return_value = None
+        await client.post(f"/api/v1/events/{event_id}/publish", cookies=cookies)
+
+    with patch("app.api.v1.events._notify_event_cancelled", new_callable=AsyncMock) as mock_notify:
+        resp = await client.post(f"/api/v1/events/{event_id}/cancel", cookies=cookies)
+        assert resp.status_code == 200
+        mock_notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_event_deletes_clawdchat_circle(client: AsyncClient):
+    """Deleting a cancelled event calls delete_circle with the stored circle_name."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000062",
+            "code": "123456",
+        })
+        cookies = {"events_token": resp.cookies.get("events_token")}
+
+    resp = await client.post("/api/v1/events", json={
+        "title": "Delete Circle Test",
+        "start_time": "2026-12-12T10:00:00+08:00",
+    }, cookies=cookies)
+    event_id = resp.json()["data"]["id"]
+
+    import uuid
+    fake_circle_id = uuid.uuid4()
+    fake_circle_name = "delete-circle-test"
+
+    with patch("app.api.v1.events._create_event_circle", new_callable=AsyncMock) as mock_create:
+        mock_create.return_value = (fake_circle_id, fake_circle_name)
+        await client.post(f"/api/v1/events/{event_id}/publish", cookies=cookies)
+
+    with patch("app.api.v1.events._notify_event_cancelled", new_callable=AsyncMock):
+        await client.post(f"/api/v1/events/{event_id}/cancel", cookies=cookies)
+
+    with patch("app.api.v1.events._archive_circle", new_callable=AsyncMock) as mock_archive:
+        mock_archive.return_value = True
+        resp = await client.delete(f"/api/v1/events/{event_id}", cookies=cookies)
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+        mock_archive.assert_called_once_with(fake_circle_name)
+
+
+@pytest.mark.asyncio
+async def test_delete_event_without_circle_skips_archive_circle(client: AsyncClient):
+    """Deleting an event with no circle_name skips the archive_circle call."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        resp = await client.post("/api/v1/auth/phone/login", json={
+            "phone": "13800000063",
+            "code": "123456",
+        })
+        cookies = {"events_token": resp.cookies.get("events_token")}
+
+    resp = await client.post("/api/v1/events", json={
+        "title": "No Circle Delete Test",
+        "start_time": "2026-12-13T10:00:00+08:00",
+    }, cookies=cookies)
+    event_id = resp.json()["data"]["id"]
+
+    # Keep as draft (no publish, no circle)
+    with patch("app.api.v1.events._archive_circle", new_callable=AsyncMock) as mock_archive:
+        resp = await client.delete(f"/api/v1/events/{event_id}", cookies=cookies)
+        assert resp.status_code == 200
+        mock_archive.assert_not_called()
