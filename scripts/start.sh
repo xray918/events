@@ -3,7 +3,7 @@
 # 策略：先装依赖+构建，最后一步才杀旧起新，最小化服务中断
 # 用法: ./scripts/start.sh
 
-set -e
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"

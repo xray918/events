@@ -37,7 +37,7 @@ interface Props {
   registrationCount?: number | null;
 }
 
-export function RegisterButton({ slug, title = "", questions, eventStatus, registrationDeadline, capacity, registrationLimit, registrationCount }: Props) {
+export function RegisterButton({ slug, title = "", questions, eventStatus, registrationDeadline, registrationLimit, registrationCount }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
