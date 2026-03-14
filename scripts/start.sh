@@ -61,8 +61,12 @@ else
 fi
 
 echo ""
+echo "🔍 [准备阶段] 前端 Lint 检查..."
+npm run lint 2>&1 | tail -10
+
+echo ""
 echo "🔨 [准备阶段] 构建前端..."
-npm run build 2>&1 | tail -5
+time npm run build 2>&1 | tail -5
 
 echo ""
 echo "✅ 准备完成，开始切换（停旧启新）..."
