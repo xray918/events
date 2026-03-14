@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import Link from "next/link";
@@ -36,6 +37,7 @@ interface Props {
 }
 
 export function RegisterButton({ slug, title = "", questions, eventStatus, registrationDeadline, capacity, registrationCount }: Props) {
+  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -45,6 +47,7 @@ export function RegisterButton({ slug, title = "", questions, eventStatus, regis
   const [result, setResult] = useState<{ success: boolean; message?: string } | null>(null);
   const [existingReg, setExistingReg] = useState<RegistrationInfo | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   const [showPhoneModal, setShowPhoneModal] = useState(false);
   const [phoneInput, setPhoneInput] = useState("");
@@ -59,9 +62,16 @@ export function RegisterButton({ slug, title = "", questions, eventStatus, regis
 
   useEffect(() => {
     fetch(`${API}/api/v1/events/${slug}/registration`, { credentials: "include" })
-      .then((r) => r.json())
+      .then((r) => {
+        if (r.status === 401) {
+          setIsLoggedIn(false);
+          return null;
+        }
+        setIsLoggedIn(true);
+        return r.json();
+      })
       .then((data) => {
-        if (data.registered && data.data) {
+        if (data?.registered && data.data) {
           setExistingReg(data.data);
         }
       })
@@ -259,6 +269,10 @@ export function RegisterButton({ slug, title = "", questions, eventStatus, regis
   }
 
   function handleClick() {
+    if (!isLoggedIn) {
+      router.push(`/login?redirect=/e/${slug}`);
+      return;
+    }
     if (hasQuestions) {
       setShowForm(true);
     } else {
@@ -338,6 +352,12 @@ export function RegisterButton({ slug, title = "", questions, eventStatus, regis
         credentials: "include",
         body: JSON.stringify({ custom_answers: Object.keys(customAnswers).length > 0 ? customAnswers : undefined }),
       });
+
+      if (res.status === 401) {
+        router.push(`/login?redirect=/e/${slug}`);
+        return;
+      }
+
       const data = await res.json();
 
       if (data.need_phone) {
