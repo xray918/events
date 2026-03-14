@@ -24,6 +24,9 @@ from app.services.clawdchat import (
     archive_circle as _archive_circle,
     notify_event_cancelled as _notify_event_cancelled,
     sync_event_post_update as _sync_event_post_update,
+    delete_post as _delete_post,
+    create_post as _create_post,
+    build_event_post_content as _build_event_post_content,
 )
 from app.services.llm import generate_event_description
 
@@ -212,6 +215,7 @@ def _build_event_response(event: Event, mask_address: bool = False) -> dict:
         "end_time": event.end_time,
         "timezone": event.timezone,
         "capacity": event.capacity,
+        "registration_limit": event.registration_limit,
         "registration_deadline": event.registration_deadline,
         "visibility": event.visibility,
         "require_approval": event.require_approval,
@@ -426,6 +430,7 @@ async def create_event(
         end_time=data.end_time,
         timezone=data.timezone,
         capacity=data.capacity,
+        registration_limit=data.registration_limit,
         registration_deadline=data.registration_deadline,
         visibility=data.visibility,
         require_approval=data.require_approval,
@@ -596,6 +601,7 @@ async def clone_event(
         end_time=source.end_time,
         timezone=source.timezone,
         capacity=source.capacity,
+        registration_limit=source.registration_limit,
         registration_deadline=None,
         visibility=source.visibility,
         require_approval=source.require_approval,
@@ -715,6 +721,16 @@ async def take_event_offline(
         raise HTTPException(status_code=400, detail=f"当前状态 {event.status} 不能下线，只有已发布的活动可以下线")
 
     event.status = "offline"
+
+    # Soft-delete the ClawdChat announce post so it's hidden from public (best-effort)
+    if event.clawdchat_post_id:
+        try:
+            await _delete_post(str(event.clawdchat_post_id))
+            event.clawdchat_post_id = None
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to delete ClawdChat post for offline event {event_id}: {e}")
+
     return {"success": True, "data": {"id": str(event.id), "status": event.status}}
 
 
@@ -741,6 +757,31 @@ async def bring_event_online(
         raise HTTPException(status_code=400, detail=f"当前状态 {event.status} 不能上线，只有已下线的活动可以重新上线")
 
     event.status = "published"
+
+    # Re-publish announce post to ClawdChat Circle (best-effort, only if circle exists)
+    if event.circle_name and not event.clawdchat_post_id:
+        try:
+            post_title, post_content = _build_event_post_content(
+                event.title, event.description, event.slug
+            )
+            from app.core.config import settings
+            event_url = f"{settings.frontend_url}/e/{event.slug}"
+            post = await _create_post(
+                circle_name=event.circle_name,
+                title=post_title,
+                content=post_content,
+                url=event_url,
+            )
+            if post and post.get("id"):
+                from uuid import UUID as _UUID
+                try:
+                    event.clawdchat_post_id = _UUID(str(post["id"]))
+                except (ValueError, TypeError):
+                    pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to re-publish ClawdChat post for online event {event_id}: {e}")
+
     return {"success": True, "data": {"id": str(event.id), "status": event.status}}
 
 
@@ -955,10 +996,10 @@ async def register_for_event(
     if dup.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="已报名此活动")
 
-    # Capacity check
-    if event.capacity:
+    # Registration limit check (registration_limit controls acceptance; capacity is display-only)
+    if event.registration_limit is not None:
         active_count = len([r for r in event.registrations if r.status in ("approved", "pending")])
-        if active_count >= event.capacity:
+        if active_count >= event.registration_limit:
             reg_status = "waitlisted"
         else:
             reg_status = "pending" if event.require_approval else "approved"

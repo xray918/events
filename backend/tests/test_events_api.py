@@ -838,16 +838,23 @@ async def test_event_offline_and_online(client: AsyncClient):
     resp = await client.post(f"/api/v1/events/{event_id}/offline", cookies=cookies)
     assert resp.status_code == 400
 
-    # Publish first
-    with patch("app.api.v1.events._create_event_circle", return_value=None):
+    # Publish first (simulate ClawdChat sync returning a circle + post)
+    fake_post_id = "aaaabbbb-cccc-dddd-eeee-ffffffffffff"
+    from uuid import UUID as _UUID
+    fake_circle_result = (_UUID("11112222-3333-4444-5555-666677778888"), "offline-test-event", _UUID(fake_post_id))
+    with patch("app.api.v1.events._create_event_circle", return_value=fake_circle_result):
         resp = await client.post(f"/api/v1/events/{event_id}/publish",
-                                 json={"sync_to_clawdchat": False}, cookies=cookies)
+                                 json={"sync_to_clawdchat": True}, cookies=cookies)
     assert resp.status_code == 200
 
-    # Take offline
-    resp = await client.post(f"/api/v1/events/{event_id}/offline", cookies=cookies)
+    # Take offline — should soft-delete the ClawdChat post
+    mock_delete = AsyncMock(return_value=True)
+    with patch("app.api.v1.events._delete_post", mock_delete):
+        resp = await client.post(f"/api/v1/events/{event_id}/offline", cookies=cookies)
     assert resp.status_code == 200
     assert resp.json()["data"]["status"] == "offline"
+    # Verify delete_post was called with the post_id
+    mock_delete.assert_called_once_with(fake_post_id)
 
     # Public listing should not include offline event
     resp = await client.get("/api/v1/events")
@@ -869,10 +876,15 @@ async def test_event_offline_and_online(client: AsyncClient):
     resp = await client.post(f"/api/v1/events/{event_id}/offline", cookies=cookies)
     assert resp.status_code == 400
 
-    # Bring back online
-    resp = await client.post(f"/api/v1/events/{event_id}/online", cookies=cookies)
+    # Bring back online — should re-create post in circle
+    new_post_id = "99998888-7777-6666-5555-444433332222"
+    mock_create = AsyncMock(return_value={"id": new_post_id, "title": "re-published"})
+    with patch("app.api.v1.events._create_post", mock_create):
+        resp = await client.post(f"/api/v1/events/{event_id}/online", cookies=cookies)
     assert resp.status_code == 200
     assert resp.json()["data"]["status"] == "published"
+    # Verify create_post was called (circle_name exists from earlier publish)
+    mock_create.assert_called_once()
 
     # Now visible publicly again
     resp = await client.get(f"/api/v1/events/{slug}")
@@ -962,3 +974,62 @@ async def test_offline_only_host_access(client: AsyncClient):
     # Host still sees it
     resp = await client.get(f"/api/v1/events/{slug}", cookies=host_cookies)
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_registration_limit_and_capacity_separation(client: AsyncClient):
+    """registration_limit controls waitlisting; capacity is display-only and does not gate registrations."""
+    mock_verify = AsyncMock(return_value=True)
+
+    with patch("app.api.v1.auth.verify_code", mock_verify):
+        # Host login
+        resp = await client.post("/api/v1/auth/phone/login", json={"phone": "13900990001", "code": "123456"})
+        host_cookies = {"events_token": resp.cookies.get("events_token")}
+
+        # Create event: capacity=5 (display), registration_limit=1 (gate)
+        resp = await client.post("/api/v1/events", json={
+            "title": "Limit Test Event",
+            "event_type": "online",
+            "start_time": "2027-01-01T10:00:00+08:00",
+            "capacity": 5,
+            "registration_limit": 1,
+            "require_approval": False,
+        }, cookies=host_cookies)
+        assert resp.status_code == 201
+        data = resp.json()["data"]
+        event_id = data["id"]
+        slug = data["slug"]
+        assert data["capacity"] == 5
+        assert data["registration_limit"] == 1
+
+        # Publish
+        with patch("app.api.v1.events._create_event_circle", return_value=None):
+            await client.post(f"/api/v1/events/{event_id}/publish",
+                              json={"sync_to_clawdchat": False}, cookies=host_cookies)
+
+        # First registrant (host registers themselves)
+        resp = await client.post(f"/api/v1/events/{slug}/register", json={}, cookies=host_cookies)
+        assert resp.status_code == 201
+        assert resp.json()["data"]["status"] == "approved"
+
+        # Second registrant — should be waitlisted (limit=1)
+        resp = await client.post("/api/v1/auth/phone/login", json={"phone": "13900990002", "code": "123456"})
+        user2_cookies = {"events_token": resp.cookies.get("events_token")}
+        resp = await client.post(f"/api/v1/events/{slug}/register", json={}, cookies=user2_cookies)
+        assert resp.status_code == 201
+        assert resp.json()["data"]["status"] == "waitlisted"
+
+        # Update: remove registration_limit (unlimited) — capacity still 5
+        resp = await client.put(f"/api/v1/events/{event_id}", json={
+            "registration_limit": None,
+        }, cookies=host_cookies)
+        assert resp.status_code == 200
+        assert resp.json()["data"]["registration_limit"] is None
+        assert resp.json()["data"]["capacity"] == 5
+
+        # Third registrant — should be approved now (no limit)
+        resp = await client.post("/api/v1/auth/phone/login", json={"phone": "13900990003", "code": "123456"})
+        user3_cookies = {"events_token": resp.cookies.get("events_token")}
+        resp = await client.post(f"/api/v1/events/{slug}/register", json={}, cookies=user3_cookies)
+        assert resp.status_code == 201
+        assert resp.json()["data"]["status"] == "approved"

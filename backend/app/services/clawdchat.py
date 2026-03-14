@@ -142,6 +142,29 @@ async def archive_circle(
     return False
 
 
+async def delete_post(
+    post_id: str,
+    api_key: Optional[str] = None,
+) -> bool:
+    """Soft-delete a ClawdChat post (author's own post). Returns True on success or if already gone."""
+    key = api_key or settings.events_bot_api_key
+    if not key:
+        logger.warning("No API key for post deletion, skipping")
+        return False
+
+    result = await _call_api("DELETE", f"/posts/{post_id}", key)
+
+    if result["status"] in (200, 404):
+        if result["status"] == 404:
+            logger.info(f"Post {post_id} not found, treating as already deleted")
+        else:
+            logger.info(f"Post {post_id} deleted")
+        return True
+
+    logger.error(f"Failed to delete post {post_id}: status={result['status']}, body={result['data']}")
+    return False
+
+
 async def notify_event_cancelled(
     event_title: str,
     event_slug: str,
