@@ -31,6 +31,7 @@ export interface EventItem {
   end_time: string | null;
   timezone: string;
   capacity: number | null;
+  registration_limit: number | null;
   registration_deadline: string | null;
   visibility: string;
   require_approval: boolean;

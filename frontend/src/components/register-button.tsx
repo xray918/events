@@ -32,11 +32,12 @@ interface Props {
   questions?: CustomQuestion[] | null;
   eventStatus?: string;
   registrationDeadline?: string | null;
-  capacity?: number | null;
+  capacity?: number | null;           // display-only: event size / venue capacity
+  registrationLimit?: number | null;  // controls registration gate (NULL = unlimited)
   registrationCount?: number | null;
 }
 
-export function RegisterButton({ slug, title = "", questions, eventStatus, registrationDeadline, capacity, registrationCount }: Props) {
+export function RegisterButton({ slug, title = "", questions, eventStatus, registrationDeadline, capacity, registrationLimit, registrationCount }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
@@ -83,13 +84,13 @@ export function RegisterButton({ slug, title = "", questions, eventStatus, regis
     ? new Date() > new Date(registrationDeadline)
     : false;
 
-  const isFull = capacity && registrationCount != null
-    ? registrationCount >= capacity
+  const isFull = registrationLimit != null && registrationCount != null
+    ? registrationCount >= registrationLimit
     : false;
 
   const isNotPublished = eventStatus && eventStatus !== "published";
 
-  const statsText = `${registrationCount || 0} 人已报名${capacity ? ` · 限 ${capacity} 人` : ""}`;
+  const statsText = `${registrationCount || 0} 人已报名${registrationLimit ? ` · 限额 ${registrationLimit} 人` : ""}`;
 
   const ShareRow = () => (
     <div className="flex items-center gap-2">

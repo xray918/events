@@ -254,6 +254,7 @@ export default async function EventDetailPage({
             eventStatus={event.status}
             registrationDeadline={event.registration_deadline}
             capacity={event.capacity}
+            registrationLimit={event.registration_limit}
             registrationCount={event.registration_count}
           />
         </div>

@@ -35,6 +35,7 @@ export default function CreateEventPage() {
     end_date: "",
     end_time: "18:00",
     capacity: "",
+    registration_limit: "",
     reg_deadline_date: "",
     reg_deadline_time: "23:59",
     require_approval: false,
@@ -119,6 +120,7 @@ export default function CreateEventPage() {
           start_time,
           end_time,
           capacity: form.capacity ? parseInt(form.capacity) : null,
+          registration_limit: form.registration_limit ? parseInt(form.registration_limit) : null,
           registration_deadline: form.reg_deadline_date
             ? `${form.reg_deadline_date}T${form.reg_deadline_time}:00+08:00`
             : null,
@@ -336,19 +338,32 @@ export default function CreateEventPage() {
           </div>
         </div>
 
-        {/* Capacity & Approval & Notification */}
+        {/* Capacity & Registration Limit & Approval & Notification */}
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="text-sm font-medium">人数上限</label>
+            <label className="text-sm font-medium">活动人数</label>
             <Input
               type="number"
               value={form.capacity}
               onChange={(e) => update("capacity", e.target.value)}
+              placeholder="预计参与人数（展示用）"
+              min={1}
+              className="mt-1.5"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium">报名上限</label>
+            <Input
+              type="number"
+              value={form.registration_limit}
+              onChange={(e) => update("registration_limit", e.target.value)}
               placeholder="不填则无限制"
               min={1}
               className="mt-1.5"
             />
           </div>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-2 justify-end">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
