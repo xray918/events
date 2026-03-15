@@ -596,8 +596,8 @@ async def add_cohost(
     """Add a co-host by phone number."""
     await _require_host(user, event_id, db)
 
-    result = await db.execute(select(User).where(User.phone == body.phone))
-    cohost_user = result.scalar_one_or_none()
+    result = await db.execute(select(User).where(User.phone == body.phone).limit(1))
+    cohost_user = result.scalars().first()
     if not cohost_user:
         raise HTTPException(status_code=404, detail="未找到该手机号对应的用户")
 
