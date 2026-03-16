@@ -1,0 +1,17 @@
+[Unit]
+Description=Events Backend (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/events/backend
+EnvironmentFile=/root/events/backend/.env
+ExecStart=/root/events/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001 --workers 2
+Restart=always
+RestartSec=5
+StandardOutput=append:/tmp/events-backend.log
+StandardError=append:/tmp/events-backend.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=Events Frontend (Next.js)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/events/frontend
+Environment=PORT=3001
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+StandardOutput=append:/tmp/events-frontend.log
+StandardError=append:/tmp/events-frontend.log
+
+[Install]
+WantedBy=multi-user.target

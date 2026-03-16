@@ -73,49 +73,26 @@ echo "✅ 准备完成，开始切换（停旧启新）..."
 echo ""
 
 # ---------------------------------------------------------------------------
-# 3. 停旧启新（这里才中断服务，尽快完成）
+# 3. 注册 systemd 服务（首次部署时自动启用，后续 reload 即可）
 # ---------------------------------------------------------------------------
 
-# --- 停止旧进程 (多策略确保彻底清理) ---
-echo "🛑 停止旧进程..."
+echo "🔧 注册 systemd 服务..."
+cp -f "$SCRIPT_DIR/events-backend.service" /etc/systemd/system/events-backend.service
+cp -f "$SCRIPT_DIR/events-frontend.service" /etc/systemd/system/events-frontend.service
+systemctl daemon-reload
+systemctl enable events-backend events-frontend
+echo "  systemd 服务已注册并设为开机自启"
 
-kill_by_pid_file() {
-    local pidfile="$1" label="$2"
-    if [ -f "$pidfile" ]; then
-        local pid=$(cat "$pidfile")
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
-            echo "  $label 进程组 $pid 已发送 TERM"
-        fi
-        rm -f "$pidfile"
-    fi
-}
+# ---------------------------------------------------------------------------
+# 4. 停旧启新（这里才中断服务，尽快完成）
+# ---------------------------------------------------------------------------
 
-kill_by_pid_file /tmp/events-backend.pid "后端"
-kill_by_pid_file /tmp/events-frontend.pid "前端"
-sleep 1
-
-# 按端口强杀残留 (lsof / fuser / ss 多重保障)
-for port in 8001 3001; do
-    lsof -ti:"$port" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
-    fuser -k "$port"/tcp 2>/dev/null || true
-done
-
-# 按进程名杀孤儿 next-server
-pkill -9 -f 'next-server' 2>/dev/null || true
-sleep 1
-
-echo "  端口 8001: $(ss -tlnp | grep -c ':8001' || echo 0) 个监听"
-echo "  端口 3001: $(ss -tlnp | grep -c ':3001' || echo 0) 个监听"
-
-# --- 立即启动新后端 ---
 echo ""
-echo "🚀 启动后端 (端口 8001)..."
-cd "$BACKEND_DIR"
-nohup uv run uvicorn main:app --host 0.0.0.0 --port 8001 --workers 2 \
-    > /tmp/events-backend.log 2>&1 &
-echo $! > /tmp/events-backend.pid
-echo "  PID: $(cat /tmp/events-backend.pid)"
+echo "🛑 重启服务..."
+systemctl restart events-backend
+echo "  后端已重启"
+systemctl restart events-frontend
+echo "  前端已重启"
 
 echo -n "  等待后端启动"
 for i in $(seq 1 15); do
@@ -126,15 +103,6 @@ for i in $(seq 1 15); do
     echo -n "."
     sleep 1
 done
-
-# --- 立即启动新前端（已构建好，秒启动） ---
-echo ""
-echo "🚀 启动前端 (端口 3001)..."
-cd "$FRONTEND_DIR"
-PORT=3001 nohup npx next start -p 3001 \
-    > /tmp/events-frontend.log 2>&1 &
-echo $! > /tmp/events-frontend.pid
-echo "  PID: $(cat /tmp/events-frontend.pid)"
 
 echo -n "  等待前端启动"
 for i in $(seq 1 15); do
@@ -147,7 +115,7 @@ for i in $(seq 1 15); do
 done
 
 # ---------------------------------------------------------------------------
-# 4. Nginx
+# 5. Nginx
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -159,7 +127,7 @@ nginx -s reload 2>/dev/null || systemctl reload nginx
 echo "  Nginx 已重载"
 
 # ---------------------------------------------------------------------------
-# 5. 验证
+# 6. 验证
 # ---------------------------------------------------------------------------
 
 echo ""
