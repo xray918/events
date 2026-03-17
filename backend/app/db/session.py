@@ -62,3 +62,6 @@ async def init_db():
         await conn.execute(text(
             "ALTER TABLE event_events ADD COLUMN IF NOT EXISTS registration_limit INTEGER"
         ))
+        await conn.execute(text(
+            "ALTER TABLE event_cohosts ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '[\"checkin\"]'"
+        ))

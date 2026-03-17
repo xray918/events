@@ -23,14 +23,55 @@ from app.services.notify import notify_registration_approved
 router = APIRouter()
 
 
-async def _require_host(user: User, event_id: UUID, db: AsyncSession) -> Event:
+async def _require_host(
+    user: User, event_id: UUID, db: AsyncSession, *, cohost_permission: str | None = None
+) -> Event:
     result = await db.execute(select(Event).where(Event.id == event_id))
     event = result.scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="活动不存在")
-    if event.host_id != user.id:
-        raise HTTPException(status_code=403, detail="无权管理此活动")
-    return event
+    if event.host_id == user.id:
+        return event
+    if cohost_permission:
+        cohost_result = await db.execute(
+            select(EventCoHost).where(
+                EventCoHost.event_id == event_id,
+                EventCoHost.user_id == user.id,
+            )
+        )
+        ch = cohost_result.scalar_one_or_none()
+        if ch is not None and cohost_permission in (ch.permissions or []):
+            return event
+    raise HTTPException(status_code=403, detail="无权管理此活动")
+
+
+# ---------------------------------------------------------------------------
+# My role on this event
+# ---------------------------------------------------------------------------
+
+@router.get("/events/{event_id}/my-role")
+async def get_my_role(
+    event_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the caller's role (host / cohost) and permissions for this event."""
+    result = await db.execute(select(Event).where(Event.id == event_id))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="活动不存在")
+
+    if event.host_id == user.id:
+        return {"success": True, "data": {"role": "host", "permissions": list(EventCoHost.VALID_PERMISSIONS)}}
+
+    cohost_result = await db.execute(
+        select(EventCoHost).where(EventCoHost.event_id == event_id, EventCoHost.user_id == user.id)
+    )
+    ch = cohost_result.scalar_one_or_none()
+    if ch:
+        return {"success": True, "data": {"role": "cohost", "permissions": ch.permissions or ["checkin"]}}
+
+    raise HTTPException(status_code=403, detail="无权管理此活动")
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +88,7 @@ async def list_registrations(
     db: AsyncSession = Depends(get_db),
 ):
     """List registrations for host's event."""
-    await _require_host(user, event_id, db)
+    await _require_host(user, event_id, db, cohost_permission="view_registrations")
 
     where = [EventRegistration.event_id == event_id]
     if status_filter:
@@ -276,7 +317,7 @@ async def list_staff(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_host(user, event_id, db)
+    await _require_host(user, event_id, db, cohost_permission="view_staff")
     result = await db.execute(
         select(EventStaff)
         .options(selectinload(EventStaff.agent))
@@ -327,7 +368,7 @@ async def export_registrations_csv(
     db: AsyncSession = Depends(get_db),
 ):
     """Export registrations as CSV."""
-    event = await _require_host(user, event_id, db)
+    event = await _require_host(user, event_id, db, cohost_permission="export_csv")
 
     q = (
         select(EventRegistration)
@@ -378,7 +419,7 @@ async def answer_statistics(
     """
     from app.models.event import EventCustomQuestion
 
-    await _require_host(user, event_id, db)
+    await _require_host(user, event_id, db, cohost_permission="view_stats")
 
     q_result = await db.execute(
         select(EventCustomQuestion).where(EventCustomQuestion.event_id == event_id)
@@ -434,7 +475,7 @@ async def filter_registrations_by_answer(
     db: AsyncSession = Depends(get_db),
 ):
     """Filter registrations by a specific answer value."""
-    await _require_host(user, event_id, db)
+    await _require_host(user, event_id, db, cohost_permission="view_stats")
 
     reg_result = await db.execute(
         select(EventRegistration)
@@ -541,7 +582,7 @@ async def list_winners(
     db: AsyncSession = Depends(get_db),
 ):
     """List confirmed winners for an event."""
-    await _require_host(user, event_id, db)
+    await _require_host(user, event_id, db, cohost_permission="view_winners")
 
     q = (
         select(EventWinner)
@@ -584,6 +625,7 @@ async def list_winners(
 
 class CoHostRequest(BaseModel):
     phone: str
+    permissions: list[str] = ["checkin"]
 
 
 @router.post("/events/{event_id}/cohosts")
@@ -595,6 +637,10 @@ async def add_cohost(
 ):
     """Add a co-host by phone number."""
     await _require_host(user, event_id, db)
+
+    perms = list({p for p in body.permissions if p in EventCoHost.VALID_PERMISSIONS})
+    if "checkin" not in perms:
+        perms.insert(0, "checkin")
 
     result = await db.execute(select(User).where(User.phone == body.phone).limit(1))
     cohost_user = result.scalars().first()
@@ -612,7 +658,7 @@ async def add_cohost(
     )
     order = (max_order.scalar() or 0) + 1
 
-    ch = EventCoHost(event_id=event_id, user_id=cohost_user.id, display_order=order)
+    ch = EventCoHost(event_id=event_id, user_id=cohost_user.id, display_order=order, permissions=perms)
     db.add(ch)
     await db.flush()
 
@@ -623,6 +669,7 @@ async def add_cohost(
             "user_id": str(cohost_user.id),
             "nickname": cohost_user.nickname,
             "avatar_url": cohost_user.avatar_url,
+            "permissions": ch.permissions,
         },
     }
 
@@ -633,7 +680,7 @@ async def list_cohosts(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_host(user, event_id, db)
+    await _require_host(user, event_id, db, cohost_permission="view_cohosts")
     result = await db.execute(
         select(EventCoHost)
         .options(selectinload(EventCoHost.user))
@@ -649,6 +696,7 @@ async def list_cohosts(
                 "user_id": str(ch.user.id) if ch.user else None,
                 "nickname": ch.user.nickname if ch.user else None,
                 "avatar_url": ch.user.avatar_url if ch.user else None,
+                "permissions": ch.permissions or ["checkin"],
             }
             for ch in cohosts
         ],
@@ -671,6 +719,38 @@ async def remove_cohost(
         raise HTTPException(status_code=404, detail="联合主办方不存在")
     await db.delete(ch)
     return {"success": True, "message": "已移除"}
+
+
+class CoHostPermissionsUpdate(BaseModel):
+    permissions: list[str]
+
+
+@router.patch("/events/{event_id}/cohosts/{cohost_id}/permissions")
+async def update_cohost_permissions(
+    event_id: UUID,
+    cohost_id: UUID,
+    body: CoHostPermissionsUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a co-host's permissions (host only)."""
+    await _require_host(user, event_id, db)
+
+    result = await db.execute(
+        select(EventCoHost).where(EventCoHost.id == cohost_id, EventCoHost.event_id == event_id)
+    )
+    ch = result.scalar_one_or_none()
+    if not ch:
+        raise HTTPException(status_code=404, detail="联合主办方不存在")
+
+    perms = list({p for p in body.permissions if p in EventCoHost.VALID_PERMISSIONS})
+    if "checkin" not in perms:
+        perms.insert(0, "checkin")
+
+    ch.permissions = perms
+    await db.flush()
+
+    return {"success": True, "data": {"id": str(ch.id), "permissions": ch.permissions}}
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +789,6 @@ async def get_checkin_key(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get current check-in key (host only)."""
-    event = await _require_host(user, event_id, db)
+    """Get current check-in key (host or co-host)."""
+    event = await _require_host(user, event_id, db, cohost_permission="view_checkin_key")
     return {"success": True, "data": {"checkin_key": event.checkin_key}}

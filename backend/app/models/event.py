@@ -151,10 +151,16 @@ class EventStaff(Base):
 class EventCoHost(Base):
     __tablename__ = "event_cohosts"
 
+    VALID_PERMISSIONS = {
+        "checkin", "view_registrations", "export_csv", "view_stats",
+        "view_cohosts", "view_staff", "view_winners", "view_checkin_key",
+    }
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     event_id = Column(UUID(as_uuid=True), ForeignKey("event_events.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     display_order = Column(Integer, default=0, nullable=False)
+    permissions = Column(JSON, default=lambda: ["checkin"], nullable=False)
     created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     event = relationship("Event", back_populates="cohosts", lazy="noload")

@@ -104,9 +104,20 @@ async def _notify_host_new_registration(event, registrant, reg_status: str):
 
 
 def _slugify(title: str) -> str:
-    """Generate URL-friendly slug from title."""
-    slug = title.lower().strip()
-    slug = re.sub(r"[^\w\s\u4e00-\u9fff-]", "", slug)
+    """Generate URL-friendly ASCII slug from title (Chinese → pinyin)."""
+    from pypinyin import lazy_pinyin
+
+    text = title.lower().strip()
+    # Convert Chinese characters to pinyin, keep ASCII as-is
+    parts: list[str] = []
+    for ch in text:
+        if "\u4e00" <= ch <= "\u9fff":
+            py = lazy_pinyin(ch)
+            parts.append(py[0] if py else "")
+        else:
+            parts.append(ch)
+    slug = "".join(parts)
+    slug = re.sub(r"[^\w\s-]", "", slug)
     slug = re.sub(r"[\s_]+", "-", slug)
     slug = slug.strip("-")
     if not slug:
@@ -287,8 +298,13 @@ async def list_my_events(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all events created by the current user (all statuses)."""
-    where_clauses = [Event.host_id == user.id]
+    """List all events created or co-hosted by the current user (all statuses)."""
+    from sqlalchemy import or_
+
+    cohosted_event_ids = (
+        select(EventCoHost.event_id).where(EventCoHost.user_id == user.id)
+    )
+    where_clauses = [or_(Event.host_id == user.id, Event.id.in_(cohosted_event_ids))]
 
     count_q = select(func.count()).select_from(Event).where(*where_clauses)
     total = (await db.execute(count_q)).scalar() or 0
@@ -304,7 +320,13 @@ async def list_my_events(
     result = await db.execute(query)
     events = result.unique().scalars().all()
 
-    return {"success": True, "data": [_build_event_response(e) for e in events], "total": total}
+    data = []
+    for e in events:
+        resp = _build_event_response(e)
+        resp["is_cohost"] = e.host_id != user.id
+        data.append(resp)
+
+    return {"success": True, "data": data, "total": total}
 
 
 # ---------------------------------------------------------------------------
@@ -373,16 +395,20 @@ async def get_event(
     if not event:
         raise HTTPException(status_code=404, detail="活动不存在")
 
-    # Offline events are only visible to the host
+    caller_id = user.id if user else (agent.owner_id if agent else None)
+    is_host_or_cohost = False
+    if caller_id:
+        is_host_or_cohost = caller_id == event.host_id or any(
+            ch.user_id == caller_id for ch in (event.cohosts or [])
+        )
+
     if event.status == "offline":
-        caller_id = user.id if user else (agent.owner_id if agent else None)
-        if not caller_id or caller_id != event.host_id:
+        if not is_host_or_cohost:
             raise HTTPException(status_code=404, detail="活动不存在")
 
     should_mask = False
     if event.require_approval:
-        caller_id = user.id if user else (agent.owner_id if agent else None)
-        if caller_id and caller_id == event.host_id:
+        if is_host_or_cohost:
             should_mask = False
         elif caller_id:
             approved = any(
@@ -514,6 +540,13 @@ async def update_event(
 
     _POST_SYNC_FIELDS = {"title", "description"}
     need_sync = bool(event.clawdchat_post_id and _POST_SYNC_FIELDS & update_data.keys())
+
+    has_chinese_slug = any("\u4e00" <= c <= "\u9fff" for c in (event.slug or ""))
+    title_changed = "title" in update_data and update_data["title"] != event.title
+    if title_changed or has_chinese_slug:
+        new_slug = _slugify(update_data.get("title", event.title))
+        if new_slug != event.slug:
+            update_data["slug"] = await _ensure_unique_slug(db, new_slug)
 
     for field, value in update_data.items():
         setattr(event, field, value)

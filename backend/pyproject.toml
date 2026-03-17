@@ -29,6 +29,8 @@ dependencies = [
     # Alibaba Cloud SMS
     "alibabacloud-dysmsapi20170525>=4.5.0",
     "alibabacloud-credentials>=1.0.7",
+    # Chinese to Pinyin (for URL slug generation)
+    "pypinyin>=0.53.0",
 ]
 
 [project.optional-dependencies]
