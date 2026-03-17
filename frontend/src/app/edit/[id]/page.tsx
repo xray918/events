@@ -10,6 +10,7 @@ import { DescriptionEditor } from "@/components/description-editor";
 import { QuestionConfigurator, QuestionDraft } from "@/components/question-configurator";
 import { ThemePicker } from "@/components/theme-picker";
 import { getThemeById, getThemeCoverStyle } from "@/lib/themes";
+import { toLocalDateStr, toLocalTimeStr, buildISOWithTZ } from "@/lib/date-utils";
 import { revalidateEventPage, revalidateEventList } from "@/app/actions";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
@@ -55,7 +56,10 @@ export default function EditEventPage() {
 
   useEffect(() => {
     if (!authenticated) return;
-    fetch(`${API}/api/v1/events/${eventId}`, { credentials: "include" })
+    fetch(`${API}/api/v1/events/${eventId}`, {
+      credentials: "include",
+      cache: "no-store",
+    })
       .then((r) => r.json())
       .then((resp) => {
         if (!resp.success || !resp.data) return;
@@ -76,14 +80,14 @@ export default function EditEventPage() {
           location_name: e.location_name || "",
           location_address: e.location_address || "",
           online_url: e.online_url || "",
-          start_date: startDt ? startDt.toISOString().slice(0, 10) : "",
-          start_time: startDt ? startDt.toTimeString().slice(0, 5) : "09:00",
-          end_date: endDt ? endDt.toISOString().slice(0, 10) : "",
-          end_time: endDt ? endDt.toTimeString().slice(0, 5) : "18:00",
+          start_date: startDt ? toLocalDateStr(startDt) : "",
+          start_time: startDt ? toLocalTimeStr(startDt) : "09:00",
+          end_date: endDt ? toLocalDateStr(endDt) : "",
+          end_time: endDt ? toLocalTimeStr(endDt) : "18:00",
           capacity: e.capacity ? String(e.capacity) : "",
           registration_limit: e.registration_limit ? String(e.registration_limit) : "",
-          reg_deadline_date: deadlineDt ? deadlineDt.toISOString().slice(0, 10) : "",
-          reg_deadline_time: deadlineDt ? deadlineDt.toTimeString().slice(0, 5) : "23:59",
+          reg_deadline_date: deadlineDt ? toLocalDateStr(deadlineDt) : "",
+          reg_deadline_time: deadlineDt ? toLocalTimeStr(deadlineDt) : "23:59",
           require_approval: e.require_approval || false,
           notify_on_register: e.notify_on_register || false,
           allow_self_checkin: e.allow_self_checkin !== false,
@@ -151,10 +155,10 @@ export default function EditEventPage() {
     setError("");
 
     const start_time = form.start_date && form.start_time
-      ? `${form.start_date}T${form.start_time}:00+08:00`
+      ? buildISOWithTZ(form.start_date, form.start_time)
       : undefined;
     const end_time = form.end_date && form.end_time
-      ? `${form.end_date}T${form.end_time}:00+08:00`
+      ? buildISOWithTZ(form.end_date, form.end_time)
       : undefined;
 
     const filteredQuestions = customQuestions.filter((q) => q.question_text.trim());
@@ -178,7 +182,7 @@ export default function EditEventPage() {
           capacity: form.capacity ? parseInt(form.capacity) : null,
           registration_limit: form.registration_limit ? parseInt(form.registration_limit) : null,
           registration_deadline: form.reg_deadline_date
-            ? `${form.reg_deadline_date}T${form.reg_deadline_time}:00+08:00`
+            ? buildISOWithTZ(form.reg_deadline_date, form.reg_deadline_time)
             : null,
           require_approval: form.require_approval,
           notify_on_register: form.notify_on_register,
