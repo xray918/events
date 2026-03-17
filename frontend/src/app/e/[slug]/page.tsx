@@ -308,25 +308,6 @@ export default async function EventDetailPage({
         {event.status === "completed" && (
           <EventFeedback slug={event.slug} />
         )}
-
-        {/* Custom Questions Preview */}
-        {event.custom_questions && event.custom_questions.length > 0 && (
-          <div>
-            <h2 className="text-lg font-semibold">报名信息</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              报名时需要填写以下信息：
-            </p>
-            <ul className="mt-2 space-y-1">
-              {event.custom_questions.map((q) => (
-                <li key={q.id} className="text-sm text-muted-foreground flex items-center gap-2">
-                  <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
-                  {q.question_text}
-                  {q.is_required && <span className="text-destructive text-xs">*</span>}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
       </div>
     </div>
   );

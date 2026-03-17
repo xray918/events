@@ -10,6 +10,7 @@ import { DescriptionEditor } from "@/components/description-editor";
 import { QuestionConfigurator, QuestionDraft } from "@/components/question-configurator";
 import { ThemePicker } from "@/components/theme-picker";
 import { getThemeById, getThemeCoverStyle } from "@/lib/themes";
+import { revalidateEventPage, revalidateEventList } from "@/app/actions";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
@@ -193,6 +194,8 @@ export default function EditEventPage() {
       });
       const data = await res.json();
       if (data.success) {
+        await revalidateEventPage(slug);
+        await revalidateEventList();
         router.push(`/e/${slug}`);
       } else {
         setError(data.detail || "保存失败");
