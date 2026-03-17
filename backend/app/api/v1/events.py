@@ -25,7 +25,9 @@ from app.services.clawdchat import (
     notify_event_cancelled as _notify_event_cancelled,
     sync_event_post_update as _sync_event_post_update,
     delete_post as _delete_post,
+    restore_post as _restore_post,
     create_post as _create_post,
+    update_post as _update_post,
     build_event_post_content as _build_event_post_content,
 )
 from app.services.llm import generate_event_description
@@ -755,11 +757,10 @@ async def take_event_offline(
 
     event.status = "offline"
 
-    # Soft-delete the ClawdChat announce post so it's hidden from public (best-effort)
+    # Soft-delete the ClawdChat post (hidden from public) but keep post_id for later restore
     if event.clawdchat_post_id:
         try:
             await _delete_post(str(event.clawdchat_post_id))
-            event.clawdchat_post_id = None
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Failed to delete ClawdChat post for offline event {event_id}: {e}")
@@ -791,8 +792,21 @@ async def bring_event_online(
 
     event.status = "published"
 
-    # Re-publish announce post to ClawdChat Circle (best-effort, only if circle exists)
-    if event.circle_name and not event.clawdchat_post_id:
+    # Restore the soft-deleted ClawdChat post, then refresh its content (best-effort)
+    if event.clawdchat_post_id:
+        try:
+            post_id_str = str(event.clawdchat_post_id)
+            restored = await _restore_post(post_id_str)
+            if restored:
+                post_title, post_content = _build_event_post_content(
+                    event.title, event.description, event.slug
+                )
+                await _update_post(post_id=post_id_str, title=post_title, content=post_content)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to restore ClawdChat post for online event {event_id}: {e}")
+    elif event.circle_name:
+        # Fallback: no saved post_id (legacy data) — create a new one
         try:
             post_title, post_content = _build_event_post_content(
                 event.title, event.description, event.slug
@@ -813,7 +827,7 @@ async def bring_event_online(
                     pass
         except Exception as e:
             import logging
-            logging.getLogger(__name__).error(f"Failed to re-publish ClawdChat post for online event {event_id}: {e}")
+            logging.getLogger(__name__).error(f"Failed to create ClawdChat post for online event {event_id}: {e}")
 
     return {"success": True, "data": {"id": str(event.id), "status": event.status}}
 

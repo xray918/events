@@ -165,6 +165,30 @@ async def delete_post(
     return False
 
 
+async def restore_post(
+    post_id: str,
+    api_key: Optional[str] = None,
+) -> bool:
+    """Restore a soft-deleted ClawdChat post. Returns True on success."""
+    key = api_key or settings.events_bot_api_key
+    if not key:
+        logger.warning("No API key for post restore, skipping")
+        return False
+
+    result = await _call_api("POST", f"/posts/{post_id}/restore", key)
+
+    if result["status"] in (200,):
+        logger.info(f"Post {post_id} restored")
+        return True
+
+    if result["status"] == 404:
+        logger.warning(f"Post {post_id} not found, cannot restore")
+        return False
+
+    logger.error(f"Failed to restore post {post_id}: status={result['status']}, body={result['data']}")
+    return False
+
+
 async def notify_event_cancelled(
     event_title: str,
     event_slug: str,
