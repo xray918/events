@@ -1,4 +1,9 @@
-"""Verification code storage and validation via Redis (multi-worker safe)."""
+"""Verification code storage and validation via Redis (multi-worker safe).
+
+Keeps the most recent MAX_CODES_KEPT codes so that any of them can be used
+for verification (handles the case where a user requests multiple codes and
+tries an older one).
+"""
 
 import json
 import random
@@ -11,6 +16,7 @@ logger = logging.getLogger(__name__)
 CODE_EXPIRE_SECONDS = 5 * 60
 RESEND_COOLDOWN_SECONDS = 60
 MAX_ATTEMPTS = 5
+MAX_CODES_KEPT = 3
 
 _KEY_PREFIX = "events:vcode:"
 
@@ -25,8 +31,21 @@ def generate_code() -> str:
 
 async def store_code(phone: str, code: str) -> None:
     r = await get_redis()
-    payload = json.dumps({"code": code, "attempts": 0})
-    await r.set(_key(phone), payload, ex=CODE_EXPIRE_SECONDS)
+    key = _key(phone)
+    raw = await r.get(key)
+
+    codes: list[str] = []
+    if raw is not None:
+        stored = json.loads(raw)
+        codes = stored.get("codes", [])
+        if not codes and "code" in stored:
+            codes = [stored["code"]]
+
+    codes.append(code)
+    codes = codes[-MAX_CODES_KEPT:]
+
+    payload = json.dumps({"codes": codes, "attempts": 0})
+    await r.set(key, payload, ex=CODE_EXPIRE_SECONDS)
 
 
 async def verify_code(phone: str, code: str) -> bool:
@@ -45,7 +64,11 @@ async def verify_code(phone: str, code: str) -> bool:
 
     stored["attempts"] += 1
 
-    if stored["code"] == code:
+    codes = stored.get("codes", [])
+    if not codes and "code" in stored:
+        codes = [stored["code"]]
+
+    if code in codes:
         await r.delete(key)
         return True
 
