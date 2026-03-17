@@ -1,86 +1,125 @@
 import { describe, it, expect } from "vitest";
 import {
-  toLocalDateStr,
-  toLocalTimeStr,
-  getTimezoneOffsetStr,
-  buildISOWithTZ,
+  toTZDateStr,
+  toTZTimeStr,
+  getTZOffsetStr,
+  buildISOInTZ,
 } from "../date-utils";
 
-describe("toLocalDateStr", () => {
-  it("returns local date in YYYY-MM-DD format", () => {
-    const d = new Date(2026, 2, 21, 18, 0); // March 21, 2026 18:00 local
-    expect(toLocalDateStr(d)).toBe("2026-03-21");
+describe("toTZDateStr", () => {
+  it("extracts date in Asia/Shanghai timezone", () => {
+    // 2026-03-21T10:00:00Z = 2026-03-21T18:00:00+08:00
+    const d = new Date("2026-03-21T10:00:00Z");
+    expect(toTZDateStr(d, "Asia/Shanghai")).toBe("2026-03-21");
   });
 
-  it("pads single-digit month and day", () => {
-    const d = new Date(2026, 0, 5, 1, 0); // Jan 5, 2026 01:00 local
-    expect(toLocalDateStr(d)).toBe("2026-01-05");
+  it("handles date boundary — UTC previous day, Shanghai same day", () => {
+    // 2026-03-21T20:00:00Z = 2026-03-22T04:00:00+08:00
+    const d = new Date("2026-03-21T20:00:00Z");
+    expect(toTZDateStr(d, "Asia/Shanghai")).toBe("2026-03-22");
   });
 
-  it("uses local date, not UTC date (critical for early morning times)", () => {
-    // Simulate: 2026-03-22T01:00:00+08:00 = 2026-03-21T17:00:00Z
-    // UTC date is March 21, but local date (UTC+8) is March 22
+  it("NZ user sees Shanghai date, not NZ date", () => {
+    // 2026-03-21T10:00:00Z = 18:00 Shanghai = 23:00 NZ (NZDT, +13)
+    const d = new Date("2026-03-21T10:00:00Z");
+    expect(toTZDateStr(d, "Asia/Shanghai")).toBe("2026-03-21");
+  });
+});
+
+describe("toTZTimeStr", () => {
+  it("extracts time in Asia/Shanghai timezone", () => {
+    const d = new Date("2026-03-21T10:00:00Z");
+    expect(toTZTimeStr(d, "Asia/Shanghai")).toBe("18:00");
+  });
+
+  it("extracts time in UTC", () => {
+    const d = new Date("2026-03-21T10:00:00Z");
+    expect(toTZTimeStr(d, "UTC")).toBe("10:00");
+  });
+
+  it("NZ user still sees Shanghai time, not NZ time", () => {
+    // 10:00 UTC = 18:00 Shanghai — should show 18:00, not 23:00 (NZ)
+    const d = new Date("2026-03-21T10:00:00Z");
+    expect(toTZTimeStr(d, "Asia/Shanghai")).toBe("18:00");
+  });
+
+  it("handles early morning correctly", () => {
+    // 2026-03-21T17:00:00Z = 2026-03-22T01:00:00+08:00
     const d = new Date("2026-03-21T17:00:00Z");
-    const localDate = toLocalDateStr(d);
-    const localDay = d.getDate();
-    expect(localDate).toContain(String(localDay).padStart(2, "0"));
+    expect(toTZTimeStr(d, "Asia/Shanghai")).toBe("01:00");
+    expect(toTZDateStr(d, "Asia/Shanghai")).toBe("2026-03-22");
   });
 });
 
-describe("toLocalTimeStr", () => {
-  it("returns local time in HH:MM format", () => {
-    const d = new Date(2026, 2, 21, 18, 30);
-    expect(toLocalTimeStr(d)).toBe("18:30");
+describe("getTZOffsetStr", () => {
+  it("returns +08:00 for Asia/Shanghai", () => {
+    const d = new Date("2026-03-21T10:00:00Z");
+    expect(getTZOffsetStr(d, "Asia/Shanghai")).toBe("+08:00");
   });
 
-  it("pads single-digit hours and minutes", () => {
-    const d = new Date(2026, 2, 21, 1, 5);
-    expect(toLocalTimeStr(d)).toBe("01:05");
-  });
-
-  it("handles midnight", () => {
-    const d = new Date(2026, 2, 21, 0, 0);
-    expect(toLocalTimeStr(d)).toBe("00:00");
+  it("returns +00:00 for UTC", () => {
+    const d = new Date("2026-03-21T10:00:00Z");
+    expect(getTZOffsetStr(d, "UTC")).toBe("+00:00");
   });
 });
 
-describe("getTimezoneOffsetStr", () => {
-  it("returns a valid timezone offset string", () => {
-    const tz = getTimezoneOffsetStr();
-    expect(tz).toMatch(/^[+-]\d{2}:\d{2}$/);
-  });
-});
-
-describe("buildISOWithTZ", () => {
-  it("combines date and time with timezone offset", () => {
-    const result = buildISOWithTZ("2026-03-21", "18:00");
-    const tz = getTimezoneOffsetStr();
-    expect(result).toBe(`2026-03-21T18:00:00${tz}`);
+describe("buildISOInTZ", () => {
+  it("builds ISO string with Shanghai offset", () => {
+    const result = buildISOInTZ("2026-03-21", "18:00", "Asia/Shanghai");
+    expect(result).toBe("2026-03-21T18:00:00+08:00");
   });
 
-  it("produces a valid ISO datetime parseable by Date", () => {
-    const result = buildISOWithTZ("2026-03-21", "18:00");
-    const parsed = new Date(result);
-    expect(parsed.getTime()).not.toBeNaN();
+  it("builds ISO string with UTC offset", () => {
+    const result = buildISOInTZ("2026-03-21", "10:00", "UTC");
+    expect(result).toBe("2026-03-21T10:00:00+00:00");
   });
 
-  it("round-trips correctly: build → parse → extract → build", () => {
-    const original = buildISOWithTZ("2026-03-21", "19:30");
-    const parsed = new Date(original);
-    const dateStr = toLocalDateStr(parsed);
-    const timeStr = toLocalTimeStr(parsed);
-    const rebuilt = buildISOWithTZ(dateStr, timeStr);
-    expect(new Date(rebuilt).getTime()).toBe(parsed.getTime());
+  it("defaults to Asia/Shanghai when no timezone given", () => {
+    const result = buildISOInTZ("2026-03-21", "18:00");
+    expect(result).toBe("2026-03-21T18:00:00+08:00");
   });
 
-  it("round-trips early morning times correctly", () => {
-    const original = buildISOWithTZ("2026-03-22", "01:00");
-    const parsed = new Date(original);
-    const dateStr = toLocalDateStr(parsed);
-    const timeStr = toLocalTimeStr(parsed);
+  it("round-trips correctly — load then save preserves UTC instant", () => {
+    const originalUTC = "2026-03-21T10:00:00Z";
+    const d = new Date(originalUTC);
+    const tz = "Asia/Shanghai";
+
+    const dateStr = toTZDateStr(d, tz);
+    const timeStr = toTZTimeStr(d, tz);
+    const rebuilt = buildISOInTZ(dateStr, timeStr, tz);
+
+    expect(new Date(rebuilt).getTime()).toBe(d.getTime());
+  });
+
+  it("round-trips early morning in Shanghai correctly", () => {
+    // 01:00 Shanghai = previous day 17:00 UTC
+    const originalUTC = "2026-03-21T17:00:00Z";
+    const d = new Date(originalUTC);
+    const tz = "Asia/Shanghai";
+
+    const dateStr = toTZDateStr(d, tz);
+    const timeStr = toTZTimeStr(d, tz);
     expect(dateStr).toBe("2026-03-22");
     expect(timeStr).toBe("01:00");
-    const rebuilt = buildISOWithTZ(dateStr, timeStr);
-    expect(new Date(rebuilt).getTime()).toBe(parsed.getTime());
+
+    const rebuilt = buildISOInTZ(dateStr, timeStr, tz);
+    expect(new Date(rebuilt).getTime()).toBe(d.getTime());
+  });
+
+  it("cross-timezone edit: NZ user editing Shanghai event preserves time", () => {
+    // Shanghai event at 18:00 (10:00 UTC)
+    const d = new Date("2026-03-21T10:00:00Z");
+    const tz = "Asia/Shanghai";
+
+    // Both NZ and China users see the same Shanghai time
+    const dateStr = toTZDateStr(d, tz);
+    const timeStr = toTZTimeStr(d, tz);
+    expect(dateStr).toBe("2026-03-21");
+    expect(timeStr).toBe("18:00");
+
+    // Saving produces the same UTC instant
+    const rebuilt = buildISOInTZ(dateStr, timeStr, tz);
+    expect(rebuilt).toBe("2026-03-21T18:00:00+08:00");
+    expect(new Date(rebuilt).getTime()).toBe(d.getTime());
   });
 });

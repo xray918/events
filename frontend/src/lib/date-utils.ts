@@ -1,31 +1,60 @@
 /**
- * Date/time utilities that consistently use the browser's local timezone.
- * Avoids mixing UTC (toISOString) with local (toTimeString) which causes
- * date shifts for events between midnight and UTC offset hours.
+ * Date/time utilities — always operate in the event's timezone, not the browser's.
+ *
+ * Core principle: the time user sees and enters IS the event location's time,
+ * regardless of where the editor is located.
  */
 
-export function toLocalDateStr(d: Date): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+const DEFAULT_EVENT_TZ = "Asia/Shanghai";
+
+/** Extract YYYY-MM-DD in the event's timezone. */
+export function toTZDateStr(d: Date, tz: string = DEFAULT_EVENT_TZ): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value || "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
-export function toLocalTimeStr(d: Date): string {
-  const hours = String(d.getHours()).padStart(2, "0");
-  const mins = String(d.getMinutes()).padStart(2, "0");
-  return `${hours}:${mins}`;
+/** Extract HH:MM in the event's timezone. */
+export function toTZTimeStr(d: Date, tz: string = DEFAULT_EVENT_TZ): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value || "";
+  return `${get("hour")}:${get("minute")}`;
 }
 
-export function getTimezoneOffsetStr(): string {
-  const offsetMin = -new Date().getTimezoneOffset();
-  const sign = offsetMin >= 0 ? "+" : "-";
-  const h = String(Math.floor(Math.abs(offsetMin) / 60)).padStart(2, "0");
-  const m = String(Math.abs(offsetMin) % 60).padStart(2, "0");
-  return `${sign}${h}:${m}`;
+/** Get UTC offset string (e.g. "+08:00") for a timezone at a given instant. */
+export function getTZOffsetStr(
+  d: Date,
+  tz: string = DEFAULT_EVENT_TZ,
+): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    timeZoneName: "longOffset",
+  }).formatToParts(d);
+  const tzName = parts.find((p) => p.type === "timeZoneName")?.value || "";
+  if (tzName === "GMT") return "+00:00";
+  const m = tzName.match(/GMT([+-]\d{2}:\d{2})/);
+  return m ? m[1] : "+00:00";
 }
 
-export function buildISOWithTZ(date: string, time: string): string {
-  const tz = getTimezoneOffsetStr();
-  return `${date}T${time}:00${tz}`;
+/**
+ * Build an ISO datetime string in the event's timezone.
+ * E.g. buildISOInTZ("2026-03-21", "18:00", "Asia/Shanghai") → "2026-03-21T18:00:00+08:00"
+ */
+export function buildISOInTZ(
+  date: string,
+  time: string,
+  tz: string = DEFAULT_EVENT_TZ,
+): string {
+  const offset = getTZOffsetStr(new Date(`${date}T${time}:00`), tz);
+  return `${date}T${time}:00${offset}`;
 }

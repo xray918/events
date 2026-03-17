@@ -71,6 +71,47 @@ const statusLabels: Record<string, string> = {
   completed: "已结束",
 };
 
+const PERM_LABELS: Record<string, string> = {
+  checkin: "签到",
+  view_registrations: "查看报名",
+  export_csv: "导出 CSV",
+  view_stats: "问卷统计",
+  view_cohosts: "查看联合主办方",
+  view_staff: "查看 Staff",
+  view_winners: "查看获奖者",
+  view_checkin_key: "查看签到密钥",
+};
+
+const OPTIONAL_PERMS = Object.entries(PERM_LABELS).filter(([k]) => k !== "checkin");
+
+function PermissionCheckboxes({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  return (
+    <div className="space-y-1">
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        <input type="checkbox" checked disabled className="h-3.5 w-3.5" />
+        签到（默认）
+      </label>
+      {OPTIONAL_PERMS.map(([key, label]) => (
+        <label key={key} className="flex items-center gap-2 text-xs cursor-pointer">
+          <input
+            type="checkbox"
+            className="h-3.5 w-3.5"
+            checked={value.includes(key)}
+            onChange={(e) => {
+              if (e.target.checked) {
+                onChange([...value, key]);
+              } else {
+                onChange(value.filter((v) => v !== key));
+              }
+            }}
+          />
+          {label}
+        </label>
+      ))}
+    </div>
+  );
+}
+
 export default function ManagePage() {
   const { authenticated } = useRequireAuth();
   const params = useParams();
@@ -90,6 +131,12 @@ export default function ManagePage() {
   const [confirmDialog, setConfirmDialog] = useState<{ type: string; regId?: string } | null>(null);
   const [syncToClawdchat, setSyncToClawdchat] = useState(true);
 
+  // Role & permissions
+  const [myRole, setMyRole] = useState<"host" | "cohost" | null>(null);
+  const [myPerms, setMyPerms] = useState<string[]>([]);
+  const isHost = myRole === "host";
+  const hasPerm = (p: string) => isHost || myPerms.includes(p);
+
   // Blast notification state
   const [showBlast, setShowBlast] = useState(false);
   const [blastSubject, setBlastSubject] = useState("");
@@ -104,10 +151,13 @@ export default function ManagePage() {
 
   // Co-host state
   const [showCohosts, setShowCohosts] = useState(false);
-  const [cohosts, setCohosts] = useState<{ id: string; nickname: string | null; avatar_url: string | null }[]>([]);
+  const [cohosts, setCohosts] = useState<{ id: string; nickname: string | null; avatar_url: string | null; permissions: string[] }[]>([]);
   const [newCohostPhone, setNewCohostPhone] = useState("");
+  const [newCohostPerms, setNewCohostPerms] = useState<string[]>([]);
   const [cohostLoading, setCohostLoading] = useState(false);
   const [cohostError, setCohostError] = useState("");
+  const [editingCohostId, setEditingCohostId] = useState<string | null>(null);
+  const [editingPerms, setEditingPerms] = useState<string[]>([]);
 
   // Staff state
   const [showStaff, setShowStaff] = useState(false);
@@ -126,6 +176,17 @@ export default function ManagePage() {
   const [checkinKey, setCheckinKey] = useState<string | null>(null);
   const [checkinKeyLoading, setCheckinKeyLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  async function loadMyRole() {
+    try {
+      const res = await fetch(`${API}/api/v1/host/events/${eventId}/my-role`, { credentials: "include" });
+      const data = await res.json();
+      if (data.success && data.data) {
+        setMyRole(data.data.role);
+        setMyPerms(data.data.permissions || []);
+      }
+    } catch { /* ignore */ }
+  }
 
   async function loadEvent() {
     try {
@@ -179,11 +240,12 @@ export default function ManagePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ phone: newCohostPhone.trim() }),
+        body: JSON.stringify({ phone: newCohostPhone.trim(), permissions: ["checkin", ...newCohostPerms] }),
       });
       const data = await res.json();
       if (data.success) {
         setNewCohostPhone("");
+        setNewCohostPerms([]);
         loadCohosts();
       } else {
         setCohostError(data.detail || "添加失败，请重试");
@@ -198,6 +260,22 @@ export default function ManagePage() {
       method: "DELETE", credentials: "include",
     });
     loadCohosts();
+  }
+
+  async function handleUpdateCohostPerms(cohostId: string, perms: string[]) {
+    try {
+      const res = await fetch(`${API}/api/v1/host/events/${eventId}/cohosts/${cohostId}/permissions`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ permissions: ["checkin", ...perms] }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        loadCohosts();
+        setEditingCohostId(null);
+      }
+    } catch { /* ignore */ }
   }
 
   async function loadStaff() {
@@ -304,6 +382,7 @@ export default function ManagePage() {
   useEffect(() => {
     if (authenticated) {
       loadEvent();
+      loadMyRole();
       loadData();
       loadStats();
       loadCohosts();
@@ -533,9 +612,16 @@ export default function ManagePage() {
         </div>
       )}
 
+      {/* Co-host role badge */}
+      {myRole === "cohost" && (
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
+          你是此活动的联合主办方
+        </div>
+      )}
+
       {/* Action Buttons */}
       <div className="flex flex-wrap items-center gap-2 mb-6">
-        {event?.status === "draft" && (
+        {isHost && event?.status === "draft" && (
           <>
             <label className="flex items-center gap-1.5 text-sm cursor-pointer select-none">
               <input
@@ -551,7 +637,7 @@ export default function ManagePage() {
             </Button>
           </>
         )}
-        {event?.status === "published" && !event.circle_id && (
+        {isHost && event?.status === "published" && !event.circle_id && (
           <Button variant="outline" onClick={handleSyncClawdchat} disabled={actionLoading === "sync"}>
             {actionLoading === "sync" ? "同步中..." : "同步到虾聊"}
           </Button>
@@ -561,20 +647,24 @@ export default function ManagePage() {
             <Button variant="outline">查看活动页</Button>
           </Link>
         )}
-        {event && (event.status === "draft" || event.status === "published" || event.status === "offline") && (
+        {isHost && event && (event.status === "draft" || event.status === "published" || event.status === "offline") && (
           <Link href={`/edit/${event.id}`}>
             <Button variant="outline">编辑活动</Button>
           </Link>
         )}
-        <Button variant="outline" onClick={handleExport}>导出 CSV</Button>
-        <Button
-          variant="outline"
-          onClick={handleClone}
-          disabled={actionLoading === "clone"}
-        >
-          {actionLoading === "clone" ? "克隆中..." : "克隆活动"}
-        </Button>
-        {event?.status === "published" && (
+        {hasPerm("export_csv") && (
+          <Button variant="outline" onClick={handleExport}>导出 CSV</Button>
+        )}
+        {isHost && (
+          <Button
+            variant="outline"
+            onClick={handleClone}
+            disabled={actionLoading === "clone"}
+          >
+            {actionLoading === "clone" ? "克隆中..." : "克隆活动"}
+          </Button>
+        )}
+        {isHost && event?.status === "published" && (
           <Button
             variant="outline"
             className="text-orange-600 hover:text-orange-600"
@@ -584,7 +674,7 @@ export default function ManagePage() {
             {actionLoading === "offline" ? "下线中..." : "暂时下线"}
           </Button>
         )}
-        {event?.status === "offline" && (
+        {isHost && event?.status === "offline" && (
           <Button
             variant="outline"
             className="text-green-600 hover:text-green-600"
@@ -594,7 +684,7 @@ export default function ManagePage() {
             {actionLoading === "online" ? "上线中..." : "重新上线"}
           </Button>
         )}
-        {event?.status === "published" && (
+        {isHost && event?.status === "published" && (
           <Button
             variant="outline"
             className="text-destructive hover:text-destructive"
@@ -603,7 +693,7 @@ export default function ManagePage() {
             取消活动
           </Button>
         )}
-        {event && (event.status === "draft" || event.status === "cancelled") && (
+        {isHost && event && (event.status === "draft" || event.status === "cancelled") && (
           <Button
             variant="outline"
             className="text-destructive hover:text-destructive"
@@ -615,7 +705,7 @@ export default function ManagePage() {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      {hasPerm("view_registrations") && <div className="grid grid-cols-4 gap-4 mb-6">
         <Card>
           <CardContent className="p-4 text-center">
             <p className="text-2xl font-bold">{regs.length}</p>
@@ -640,7 +730,7 @@ export default function ManagePage() {
             <p className="text-xs text-muted-foreground">已签到</p>
           </CardContent>
         </Card>
-      </div>
+      </div>}
 
       {/* Check-in Scanner & Staff Link */}
       {event?.status === "published" && (
@@ -654,61 +744,63 @@ export default function ManagePage() {
           {showCheckin && (
             <div className="mt-3 space-y-3">
               {/* Staff check-in link */}
-              <Card>
-                <CardContent className="p-4 space-y-3">
-                  <p className="text-sm font-medium">工作人员签到链接</p>
-                  <p className="text-xs text-muted-foreground">
-                    生成链接发给工作人员，无需登录即可用手机扫码签到
-                  </p>
-                  {checkinKey ? (
-                    <div className="space-y-2">
-                      <div className="flex gap-2">
-                        <Input
-                          readOnly
-                          value={getStaffCheckinUrl()}
-                          className="text-xs bg-muted flex-1"
-                          onFocus={(e) => e.target.select()}
-                        />
-                        <Button size="sm" variant="outline" onClick={copyCheckinLink}>
-                          {copied ? "已复制" : "复制"}
-                        </Button>
+              {isHost && (
+                <Card>
+                  <CardContent className="p-4 space-y-3">
+                    <p className="text-sm font-medium">工作人员签到链接</p>
+                    <p className="text-xs text-muted-foreground">
+                      生成链接发给工作人员，无需登录即可用手机扫码签到
+                    </p>
+                    {checkinKey ? (
+                      <div className="space-y-2">
+                        <div className="flex gap-2">
+                          <Input
+                            readOnly
+                            value={getStaffCheckinUrl()}
+                            className="text-xs bg-muted flex-1"
+                            onFocus={(e) => e.target.select()}
+                          />
+                          <Button size="sm" variant="outline" onClick={copyCheckinLink}>
+                            {copied ? "已复制" : "复制"}
+                          </Button>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleGenerateCheckinKey}
+                            disabled={checkinKeyLoading}
+                          >
+                            重新生成
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-destructive"
+                            onClick={handleRevokeCheckinKey}
+                            disabled={checkinKeyLoading}
+                          >
+                            废弃链接
+                          </Button>
+                        </div>
                       </div>
-                      <div className="flex gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={handleGenerateCheckinKey}
-                          disabled={checkinKeyLoading}
-                        >
-                          重新生成
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="text-destructive"
-                          onClick={handleRevokeCheckinKey}
-                          disabled={checkinKeyLoading}
-                        >
-                          废弃链接
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <Button
-                      size="sm"
-                      onClick={handleGenerateCheckinKey}
-                      disabled={checkinKeyLoading}
-                    >
-                      {checkinKeyLoading ? "生成中..." : "生成签到链接"}
-                    </Button>
-                  )}
-                </CardContent>
-              </Card>
+                    ) : (
+                      <Button
+                        size="sm"
+                        onClick={handleGenerateCheckinKey}
+                        disabled={checkinKeyLoading}
+                      >
+                        {checkinKeyLoading ? "生成中..." : "生成签到链接"}
+                      </Button>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
 
-              {/* Host self-scan */}
+              {/* Host/cohost self-scan */}
               <Card>
                 <CardContent className="p-4 space-y-3">
-                  <p className="text-sm font-medium">主办方扫码</p>
+                  <p className="text-sm font-medium">扫码签到</p>
                   <p className="text-xs text-muted-foreground">
                     用手机摄像头扫描参会者的签到二维码
                   </p>
@@ -731,7 +823,7 @@ export default function ManagePage() {
       )}
 
       {/* Blast Notification */}
-      <div className="mb-6">
+      {isHost && <div className="mb-6">
         <button
           onClick={() => setShowBlast(!showBlast)}
           className="text-sm font-medium text-primary hover:underline"
@@ -796,10 +888,10 @@ export default function ManagePage() {
             </CardContent>
           </Card>
         )}
-      </div>
+      </div>}
 
       {/* Co-Host Management */}
-      <div className="mb-6">
+      {hasPerm("view_cohosts") && <div className="mb-6">
         <button
           onClick={() => setShowCohosts(!showCohosts)}
           className="text-sm font-medium text-primary hover:underline"
@@ -810,42 +902,92 @@ export default function ManagePage() {
         {showCohosts && (
           <Card className="mt-3">
             <CardContent className="p-4 space-y-3">
-              <div className="flex gap-2">
-                <Input
-                  placeholder="输入联合主办方手机号"
-                  value={newCohostPhone}
-                  onChange={(e) => { setNewCohostPhone(e.target.value); setCohostError(""); }}
-                  className="flex-1"
-                />
-                <Button size="sm" onClick={handleAddCohost} disabled={cohostLoading || !newCohostPhone.trim()}>
-                  {cohostLoading ? "添加中..." : "添加"}
-                </Button>
-              </div>
-              {cohostError && <p className="text-xs text-destructive">{cohostError}</p>}
+              {isHost && (
+                <>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="输入联合主办方手机号"
+                      value={newCohostPhone}
+                      onChange={(e) => { setNewCohostPhone(e.target.value); setCohostError(""); }}
+                      className="flex-1"
+                    />
+                    <Button size="sm" onClick={handleAddCohost} disabled={cohostLoading || !newCohostPhone.trim()}>
+                      {cohostLoading ? "添加中..." : "添加"}
+                    </Button>
+                  </div>
+                  {newCohostPhone.trim() && (
+                    <PermissionCheckboxes
+                      value={newCohostPerms}
+                      onChange={setNewCohostPerms}
+                    />
+                  )}
+                  {cohostError && <p className="text-xs text-destructive">{cohostError}</p>}
+                </>
+              )}
               {cohosts.length === 0 ? (
                 <p className="text-sm text-muted-foreground">暂无联合主办方</p>
               ) : (
                 <div className="space-y-2">
                   {cohosts.map((ch) => (
-                    <div key={ch.id} className="flex items-center justify-between rounded-lg bg-muted/50 p-2.5">
-                      <div className="flex items-center gap-2">
-                        {ch.avatar_url ? (
-                          <img src={ch.avatar_url} alt="" className="h-6 w-6 rounded-full" />
-                        ) : (
-                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs">
-                            {(ch.nickname || "?")[0]}
-                          </span>
+                    <div key={ch.id} className="rounded-lg bg-muted/50 p-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          {ch.avatar_url ? (
+                            <img src={ch.avatar_url} alt="" className="h-6 w-6 rounded-full" />
+                          ) : (
+                            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs">
+                              {(ch.nickname || "?")[0]}
+                            </span>
+                          )}
+                          <span className="text-sm font-medium">{ch.nickname}</span>
+                        </div>
+                        {isHost && (
+                          <div className="flex items-center gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-xs"
+                              onClick={() => {
+                                if (editingCohostId === ch.id) {
+                                  setEditingCohostId(null);
+                                } else {
+                                  setEditingCohostId(ch.id);
+                                  setEditingPerms((ch.permissions || []).filter((p: string) => p !== "checkin"));
+                                }
+                              }}
+                            >
+                              {editingCohostId === ch.id ? "取消" : "权限"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-xs text-destructive hover:text-destructive"
+                              onClick={() => handleRemoveCohost(ch.id)}
+                            >
+                              移除
+                            </Button>
+                          </div>
                         )}
-                        <span className="text-sm font-medium">{ch.nickname}</span>
                       </div>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-xs text-destructive hover:text-destructive"
-                        onClick={() => handleRemoveCohost(ch.id)}
-                      >
-                        移除
-                      </Button>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {(ch.permissions || ["checkin"]).map((p: string) => (
+                          <span key={p} className="inline-block rounded bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                            {PERM_LABELS[p] || p}
+                          </span>
+                        ))}
+                      </div>
+                      {isHost && editingCohostId === ch.id && (
+                        <div className="mt-2 border-t pt-2">
+                          <PermissionCheckboxes value={editingPerms} onChange={setEditingPerms} />
+                          <Button
+                            size="sm"
+                            className="mt-2"
+                            onClick={() => handleUpdateCohostPerms(ch.id, editingPerms)}
+                          >
+                            保存权限
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -853,10 +995,10 @@ export default function ManagePage() {
             </CardContent>
           </Card>
         )}
-      </div>
+      </div>}
 
       {/* Staff Management */}
-      <div className="mb-6">
+      {hasPerm("view_staff") && <div className="mb-6">
         <button
           onClick={() => setShowStaff(!showStaff)}
           className="text-sm font-medium text-primary hover:underline"
@@ -867,17 +1009,19 @@ export default function ManagePage() {
         {showStaff && (
           <Card className="mt-3">
             <CardContent className="p-4 space-y-3">
-              <div className="flex gap-2">
-                <Input
-                  placeholder="输入 Agent 名称（如 my-agent）"
-                  value={newStaffName}
-                  onChange={(e) => setNewStaffName(e.target.value)}
-                  className="flex-1"
-                />
-                <Button size="sm" onClick={handleAddStaff} disabled={staffLoading || !newStaffName.trim()}>
-                  {staffLoading ? "添加中..." : "添加 Staff"}
-                </Button>
-              </div>
+              {isHost && (
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="输入 Agent 名称（如 my-agent）"
+                    value={newStaffName}
+                    onChange={(e) => setNewStaffName(e.target.value)}
+                    className="flex-1"
+                  />
+                  <Button size="sm" onClick={handleAddStaff} disabled={staffLoading || !newStaffName.trim()}>
+                    {staffLoading ? "添加中..." : "添加 Staff"}
+                  </Button>
+                </div>
+              )}
               {staffList.length === 0 ? (
                 <p className="text-sm text-muted-foreground">暂无 Staff Agent</p>
               ) : (
@@ -888,14 +1032,16 @@ export default function ManagePage() {
                         <p className="text-sm font-medium">{s.agent_display_name || s.agent_name}</p>
                         <p className="text-xs text-muted-foreground">角色: {s.role}</p>
                       </div>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-xs text-destructive hover:text-destructive"
-                        onClick={() => handleRemoveStaff(s.id)}
-                      >
-                        移除
-                      </Button>
+                      {isHost && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-xs text-destructive hover:text-destructive"
+                          onClick={() => handleRemoveStaff(s.id)}
+                        >
+                          移除
+                        </Button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -903,10 +1049,10 @@ export default function ManagePage() {
             </CardContent>
           </Card>
         )}
-      </div>
+      </div>}
 
       {/* Winners */}
-      <div className="mb-6">
+      {hasPerm("view_winners") && <div className="mb-6">
         <button
           onClick={() => setShowWinners(!showWinners)}
           className="text-sm font-medium text-primary hover:underline"
@@ -941,10 +1087,10 @@ export default function ManagePage() {
             </CardContent>
           </Card>
         )}
-      </div>
+      </div>}
 
       {/* Post-event Feedback */}
-      {event && event.status === "completed" && (
+      {isHost && event && event.status === "completed" && (
         <div className="mb-6">
           <button
             onClick={() => { setShowFeedback(!showFeedback); if (!showFeedback) loadFeedback(); }}
@@ -980,7 +1126,7 @@ export default function ManagePage() {
       )}
 
       {/* Answer Statistics */}
-      {answerStats.length > 0 && (
+      {hasPerm("view_stats") && answerStats.length > 0 && (
         <div className="mb-4">
           <button
             onClick={() => setShowStats(!showStats)}
@@ -1039,7 +1185,7 @@ export default function ManagePage() {
       )}
 
       {/* Batch actions */}
-      {pendingCount > 0 && (
+      {isHost && pendingCount > 0 && (
         <div className="mb-4 flex items-center gap-2 rounded-lg bg-muted/50 p-3">
           <p className="text-sm">{pendingCount} 个报名待审批</p>
           <Button size="sm" onClick={handleBatchApprove}>全部通过</Button>
@@ -1059,7 +1205,7 @@ export default function ManagePage() {
       )}
 
       {/* Registrations List */}
-      <div>
+      {hasPerm("view_registrations") && <div>
         <div className="flex gap-2 mb-4">
           {["all", "pending", "approved", "declined", "waitlisted"].map((s) => (
             <button
@@ -1116,7 +1262,7 @@ export default function ManagePage() {
                           {expandedReg === reg.id ? "收起" : "问卷"}
                         </Button>
                       )}
-                      {reg.status === "pending" && (
+                      {isHost && reg.status === "pending" && (
                         <>
                           <Button size="sm" onClick={() => handleApprove(reg.id)}>通过</Button>
                           <Button
@@ -1168,7 +1314,7 @@ export default function ManagePage() {
             ))
           )}
         </div>
-      </div>
+      </div>}
 
       {/* Confirm Dialog */}
       {confirmDialog && (

@@ -37,6 +37,7 @@ interface MyEvent {
   status: string;
   start_time: string;
   registration_count: number;
+  is_cohost?: boolean;
 }
 
 const statusMap: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
@@ -252,14 +253,23 @@ export default function MyPage() {
                   draft: { label: "草稿", variant: "secondary" },
                   cancelled: { label: "已取消", variant: "destructive" },
                   completed: { label: "已结束", variant: "outline" },
+                  offline: { label: "已下线", variant: "destructive" },
                 };
                 const si = statusInfo[evt.status] || { label: evt.status, variant: "outline" as const };
+                const href = evt.is_cohost
+                  ? `/manage/${evt.id}`
+                  : evt.status === "draft" ? `/edit/${evt.id}` : `/manage/${evt.id}`;
                 return (
-                  <Link key={evt.id} href={evt.status === "draft" ? `/edit/${evt.id}` : `/manage/${evt.id}`}>
+                  <Link key={evt.id} href={href}>
                     <Card className="hover:shadow-md transition-shadow cursor-pointer">
                       <CardContent className="flex items-center justify-between p-4">
                         <div>
-                          <p className="font-medium">{evt.title}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium">{evt.title}</p>
+                            {evt.is_cohost && (
+                              <Badge variant="outline" className="text-xs">联合主办</Badge>
+                            )}
+                          </div>
                           <p className="text-xs text-muted-foreground mt-0.5">
                             {new Date(evt.start_time).toLocaleDateString("zh-CN")}
                             {evt.registration_count > 0 && ` · ${evt.registration_count} 人报名`}

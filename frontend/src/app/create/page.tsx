@@ -10,7 +10,7 @@ import { DescriptionEditor } from "@/components/description-editor";
 import { QuestionConfigurator, QuestionDraft } from "@/components/question-configurator";
 import { ThemePicker } from "@/components/theme-picker";
 import { getThemeById, getThemeCoverStyle } from "@/lib/themes";
-import { buildISOWithTZ } from "@/lib/date-utils";
+import { buildISOInTZ } from "@/lib/date-utils";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
 
@@ -92,10 +92,10 @@ export default function CreateEventPage() {
     setError("");
 
     const start_time = form.start_date && form.start_time
-      ? buildISOWithTZ(form.start_date, form.start_time)
+      ? buildISOInTZ(form.start_date, form.start_time)
       : null;
     const end_time = form.end_date && form.end_time
-      ? buildISOWithTZ(form.end_date, form.end_time)
+      ? buildISOInTZ(form.end_date, form.end_time)
       : null;
 
     if (!start_time) {
@@ -123,7 +123,7 @@ export default function CreateEventPage() {
           capacity: form.capacity ? parseInt(form.capacity) : null,
           registration_limit: form.registration_limit ? parseInt(form.registration_limit) : null,
           registration_deadline: form.reg_deadline_date
-            ? buildISOWithTZ(form.reg_deadline_date, form.reg_deadline_time)
+            ? buildISOInTZ(form.reg_deadline_date, form.reg_deadline_time)
             : null,
           require_approval: form.require_approval,
           notify_on_register: form.notify_on_register,

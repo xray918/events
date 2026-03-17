@@ -10,7 +10,7 @@ import { DescriptionEditor } from "@/components/description-editor";
 import { QuestionConfigurator, QuestionDraft } from "@/components/question-configurator";
 import { ThemePicker } from "@/components/theme-picker";
 import { getThemeById, getThemeCoverStyle } from "@/lib/themes";
-import { toLocalDateStr, toLocalTimeStr, buildISOWithTZ } from "@/lib/date-utils";
+import { toTZDateStr, toTZTimeStr, buildISOInTZ } from "@/lib/date-utils";
 import { revalidateEventPage, revalidateEventList } from "@/app/actions";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8082";
@@ -26,6 +26,7 @@ export default function EditEventPage() {
   const [aiLoading, setAiLoading] = useState(false);
   const [error, setError] = useState("");
   const [slug, setSlug] = useState("");
+  const [eventTZ, setEventTZ] = useState("Asia/Shanghai");
   const [themePreset, setThemePreset] = useState("");
   const [customQuestions, setCustomQuestions] = useState<QuestionDraft[]>([]);
   const [form, setForm] = useState({
@@ -65,6 +66,8 @@ export default function EditEventPage() {
         if (!resp.success || !resp.data) return;
         const e = resp.data;
         setSlug(e.slug);
+        const tz = e.timezone || "Asia/Shanghai";
+        setEventTZ(tz);
         if (e.theme?.preset) setThemePreset(e.theme.preset);
 
         const startDt = e.start_time ? new Date(e.start_time) : null;
@@ -80,14 +83,14 @@ export default function EditEventPage() {
           location_name: e.location_name || "",
           location_address: e.location_address || "",
           online_url: e.online_url || "",
-          start_date: startDt ? toLocalDateStr(startDt) : "",
-          start_time: startDt ? toLocalTimeStr(startDt) : "09:00",
-          end_date: endDt ? toLocalDateStr(endDt) : "",
-          end_time: endDt ? toLocalTimeStr(endDt) : "18:00",
+          start_date: startDt ? toTZDateStr(startDt, tz) : "",
+          start_time: startDt ? toTZTimeStr(startDt, tz) : "09:00",
+          end_date: endDt ? toTZDateStr(endDt, tz) : "",
+          end_time: endDt ? toTZTimeStr(endDt, tz) : "18:00",
           capacity: e.capacity ? String(e.capacity) : "",
           registration_limit: e.registration_limit ? String(e.registration_limit) : "",
-          reg_deadline_date: deadlineDt ? toLocalDateStr(deadlineDt) : "",
-          reg_deadline_time: deadlineDt ? toLocalTimeStr(deadlineDt) : "23:59",
+          reg_deadline_date: deadlineDt ? toTZDateStr(deadlineDt, tz) : "",
+          reg_deadline_time: deadlineDt ? toTZTimeStr(deadlineDt, tz) : "23:59",
           require_approval: e.require_approval || false,
           notify_on_register: e.notify_on_register || false,
           allow_self_checkin: e.allow_self_checkin !== false,
@@ -155,10 +158,10 @@ export default function EditEventPage() {
     setError("");
 
     const start_time = form.start_date && form.start_time
-      ? buildISOWithTZ(form.start_date, form.start_time)
+      ? buildISOInTZ(form.start_date, form.start_time, eventTZ)
       : undefined;
     const end_time = form.end_date && form.end_time
-      ? buildISOWithTZ(form.end_date, form.end_time)
+      ? buildISOInTZ(form.end_date, form.end_time, eventTZ)
       : undefined;
 
     const filteredQuestions = customQuestions.filter((q) => q.question_text.trim());
@@ -182,7 +185,7 @@ export default function EditEventPage() {
           capacity: form.capacity ? parseInt(form.capacity) : null,
           registration_limit: form.registration_limit ? parseInt(form.registration_limit) : null,
           registration_deadline: form.reg_deadline_date
-            ? buildISOWithTZ(form.reg_deadline_date, form.reg_deadline_time)
+            ? buildISOInTZ(form.reg_deadline_date, form.reg_deadline_time, eventTZ)
             : null,
           require_approval: form.require_approval,
           notify_on_register: form.notify_on_register,
