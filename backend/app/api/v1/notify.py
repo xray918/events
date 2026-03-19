@@ -260,9 +260,10 @@ async def blast_test_sms(
     if not template_code:
         raise HTTPException(status_code=400, detail="该类型短信模板未配置")
 
+    import re
     results = []
-    for phone in body.phones:
-        phone = phone.strip()
+    for raw_phone in body.phones:
+        phone = re.sub(r"\D", "", raw_phone.strip())
         if not phone:
             continue
         r = await send_sms(
