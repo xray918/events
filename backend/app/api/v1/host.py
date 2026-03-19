@@ -166,7 +166,7 @@ async def approve_registration(
     reg.approved_at = utc_now()
 
     try:
-        await notify_registration_approved(reg, event.title, db)
+        await notify_registration_approved(reg, event, db)
     except Exception:
         import logging
         logging.getLogger(__name__).warning(f"Notification failed for reg {reg_id}")
@@ -248,7 +248,7 @@ async def batch_approve(
     logger = logging.getLogger(__name__)
     for reg in pending_regs:
         try:
-            await notify_registration_approved(reg, event.title, db)
+            await notify_registration_approved(reg, event, db)
         except Exception:
             logger.warning(f"Batch notification failed for reg {reg.id}")
 

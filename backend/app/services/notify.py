@@ -1,6 +1,7 @@
 """Dual-channel notification service — SMS for humans, A2A for agents."""
 
 import logging
+import zoneinfo
 from typing import Optional
 from uuid import UUID
 
@@ -10,29 +11,41 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.clawdchat import Agent, User
-from app.models.event import EventRegistration
+from app.models.event import Event, EventRegistration
 from app.services.sms import send_sms
 
 logger = logging.getLogger(__name__)
 
 
+def _format_event_time(event: Event) -> str:
+    if not event.start_time:
+        return "待定"
+    tz = zoneinfo.ZoneInfo(event.timezone or "Asia/Shanghai")
+    local = event.start_time.astimezone(tz)
+    return f"{local.month}月{local.day}日 {local.strftime('%H:%M')}"
+
+
 async def notify_registration_approved(
     reg: EventRegistration,
-    event_title: str,
+    event: Event,
     db: AsyncSession,
 ):
     """Notify a registrant that their registration was approved."""
-    if reg.phone:
+    if reg.phone and settings.sms_blast_template_code:
         await send_sms(
             phone=reg.phone,
-            template_code=settings.sms_template_code,
-            template_params={"event": event_title[:20], "status": "已通过"},
+            template_code=settings.sms_blast_template_code,
+            template_params={
+                "event": (event.title or "")[:20],
+                "time": _format_event_time(event)[:20],
+                "location": (event.location_name or event.location_address or "线上")[:20],
+            },
         )
 
     if reg.user_id:
         await _notify_user_agents_via_a2a(
             user_id=reg.user_id,
-            message=f"你报名的活动「{event_title}」已通过审批！记得准时参加。",
+            message=f"你报名的活动「{event.title}」已通过审批！记得准时参加。",
             db=db,
         )
 
@@ -74,25 +87,20 @@ async def send_blast_to_registration(
     channels: list[str],
     db: AsyncSession,
     *,
-    event_time: str = "",
-    event_location: str = "",
+    sms_template_code: str = "",
+    sms_params: Optional[dict[str, str]] = None,
 ) -> dict:
     """Send a blast message to a single registration."""
     results = {}
 
     if "sms" in channels and reg.phone:
-        template_code = settings.sms_blast_template_code
-        if not template_code:
-            results["sms"] = {"success": False, "error": "Blast SMS template not configured"}
+        if not sms_template_code:
+            results["sms"] = {"success": False, "error": "SMS template not configured"}
         else:
             sms_result = await send_sms(
                 phone=reg.phone,
-                template_code=template_code,
-                template_params={
-                    "event": subject[:20],
-                    "time": event_time[:20],
-                    "location": event_location[:20],
-                },
+                template_code=sms_template_code,
+                template_params=sms_params or {},
             )
             results["sms"] = sms_result
 
