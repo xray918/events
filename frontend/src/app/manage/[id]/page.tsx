@@ -74,6 +74,7 @@ const statusLabels: Record<string, string> = {
 const PERM_LABELS: Record<string, string> = {
   checkin: "签到",
   view_registrations: "查看报名",
+  approve_registrations: "审批报名",
   export_csv: "导出 CSV",
   view_stats: "问卷统计",
   view_cohosts: "查看联合主办方",
@@ -113,7 +114,7 @@ function PermissionCheckboxes({ value, onChange }: { value: string[]; onChange: 
 }
 
 export default function ManagePage() {
-  const { authenticated } = useRequireAuth();
+  const { authenticated, user: currentUser } = useRequireAuth();
   const params = useParams();
   const router = useRouter();
   const eventId = params.id as string;
@@ -139,11 +140,17 @@ export default function ManagePage() {
 
   // Blast notification state
   const [showBlast, setShowBlast] = useState(false);
-  const [blastSubject, setBlastSubject] = useState("");
   const [blastContent, setBlastContent] = useState("");
-  const [blastChannels, setBlastChannels] = useState<string[]>(["sms", "a2a"]);
+  const [blastChannels, setBlastChannels] = useState<string[]>(["sms"]);
   const [blastLoading, setBlastLoading] = useState(false);
   const [blastResult, setBlastResult] = useState<string | null>(null);
+  const [smsTemplates, setSmsTemplates] = useState<{ type: string; label: string; variables: string[]; preview: string; configured: boolean }[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState("registration_success");
+  const [smsVars, setSmsVars] = useState<Record<string, string>>({});
+  const [smsVarsInited, setSmsVarsInited] = useState(false);
+  const [testPhones, setTestPhones] = useState("");
+  const [testLoading, setTestLoading] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
 
   // Feedback state
   const [showFeedback, setShowFeedback] = useState(false);
@@ -151,7 +158,7 @@ export default function ManagePage() {
 
   // Co-host state
   const [showCohosts, setShowCohosts] = useState(false);
-  const [cohosts, setCohosts] = useState<{ id: string; nickname: string | null; avatar_url: string | null; permissions: string[] }[]>([]);
+  const [cohosts, setCohosts] = useState<{ id: string; user_id: string | null; nickname: string | null; avatar_url: string | null; permissions: string[] }[]>([]);
   const [newCohostPhone, setNewCohostPhone] = useState("");
   const [newCohostPerms, setNewCohostPerms] = useState<string[]>([]);
   const [cohostLoading, setCohostLoading] = useState(false);
@@ -176,6 +183,7 @@ export default function ManagePage() {
   const [checkinKey, setCheckinKey] = useState<string | null>(null);
   const [checkinKeyLoading, setCheckinKeyLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [showRegs, setShowRegs] = useState(false);
 
   async function loadMyRole() {
     try {
@@ -389,8 +397,17 @@ export default function ManagePage() {
       loadStaff();
       loadWinners();
       loadCheckinKey();
+      loadSmsTemplates();
     }
   }, [eventId, authenticated]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadSmsTemplates() {
+    try {
+      const res = await fetch(`${API}/api/v1/notify/sms-templates`, { credentials: "include" });
+      const data = await res.json();
+      if (data.success) setSmsTemplates(data.data);
+    } catch { /* ignore */ }
+  }
 
   async function handlePublish() {
     setActionLoading("publish");
@@ -551,8 +568,39 @@ export default function ManagePage() {
     window.URL.revokeObjectURL(url);
   }
 
-  async function handleBlast() {
-    if (!blastSubject.trim() || !blastContent.trim()) return;
+  const VAR_LABELS: Record<string, string> = { event: "活动名", time: "时间", location: "地点" };
+
+  function getEventDefaults(): Record<string, string> {
+    if (!event) return {};
+    const fmt = (t: string | undefined) => {
+      if (!t) return "待定";
+      const d = new Date(t);
+      return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+    };
+    return { event: event.title || "", time: fmt(event.start_time), location: event.location_name || "线上" };
+  }
+
+  if (event && !smsVarsInited) {
+    setSmsVars(getEventDefaults());
+    setSmsVarsInited(true);
+  }
+
+  const currentTemplate = smsTemplates.find((t) => t.type === selectedTemplate);
+
+  function renderSmsPreview() {
+    if (!currentTemplate) return "";
+    let text = currentTemplate.preview;
+    for (const v of currentTemplate.variables) {
+      text = text.replace(`\${${v}}`, smsVars[v] || "");
+    }
+    return text;
+  }
+
+  async function handleBlast(channels: string[]) {
+    const needContent = channels.includes("a2a");
+    if (needContent && !blastContent.trim()) return;
+    if (channels.length === 0) return;
+    setBlastChannels(channels);
     setBlastLoading(true);
     setBlastResult(null);
     try {
@@ -561,18 +609,19 @@ export default function ManagePage() {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          subject: blastSubject,
-          content: blastContent,
-          channels: blastChannels,
+          subject: smsVars.event || event?.title || "",
+          content: blastContent.trim() || smsVars.event || "",
+          channels,
           target_status: "approved",
+          sms_template_type: selectedTemplate,
+          sms_params: smsVars,
         }),
       });
       const data = await res.json();
       if (data.success) {
         const d = data.data;
         setBlastResult(`发送完成：${d.sent}/${d.total_recipients} 人成功`);
-        setBlastSubject("");
-        setBlastContent("");
+        if (channels.includes("a2a")) setBlastContent("");
       } else {
         setBlastResult(data.detail || "发送失败");
       }
@@ -583,10 +632,50 @@ export default function ManagePage() {
     }
   }
 
+  async function handleTestSms() {
+    const phones = testPhones.split(/[,，\s]+/).filter(Boolean);
+    if (phones.length === 0 || phones.length > 3) return;
+    setTestLoading(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`${API}/api/v1/notify/events/${eventId}/blast/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          phones,
+          sms_template_type: selectedTemplate,
+          sms_params: smsVars,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const results = data.data as { phone: string; success: boolean; error?: string }[];
+        const ok = results.filter((r) => r.success).length;
+        setTestResult(`测试发送：${ok}/${results.length} 条成功`);
+      } else {
+        setTestResult(data.detail || "测试失败");
+      }
+    } catch {
+      setTestResult("网络错误");
+    } finally {
+      setTestLoading(false);
+    }
+  }
+
   const filteredRegs = filter === "all" ? regs : regs.filter((r) => r.status === filter);
   const pendingCount = regs.filter((r) => r.status === "pending").length;
   const approvedCount = regs.filter((r) => r.status === "approved").length;
+  const declinedCount = regs.filter((r) => r.status === "declined").length;
+  const waitlistedCount = regs.filter((r) => r.status === "waitlisted").length;
   const checkedInCount = regs.filter((r) => r.checked_in_at).length;
+  const statusCounts: Record<string, number> = {
+    all: regs.length,
+    pending: pendingCount,
+    approved: approvedCount,
+    declined: declinedCount,
+    waitlisted: waitlistedCount,
+  };
 
   if (loading) {
     return <div className="mx-auto max-w-4xl px-4 py-10"><p className="text-muted-foreground">加载中...</p></div>;
@@ -612,10 +701,30 @@ export default function ManagePage() {
         </div>
       )}
 
-      {/* Co-host role badge */}
+      {/* Co-host role badge & permissions */}
       {myRole === "cohost" && (
-        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
-          你是此活动的联合主办方
+        <div className="mb-4 space-y-2">
+          <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
+            你是此活动的联合主办方
+          </div>
+          {(() => {
+            const myCohost = cohosts.find((ch) => ch.user_id === currentUser?.id);
+            if (!myCohost) return null;
+            return (
+              <Card>
+                <CardContent className="p-4">
+                  <p className="text-sm font-medium mb-2">我的权限</p>
+                  <div className="flex flex-wrap gap-1">
+                    {(myCohost.permissions || ["checkin"]).map((p: string) => (
+                      <span key={p} className="inline-block rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                        {PERM_LABELS[p] || p}
+                      </span>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })()}
         </div>
       )}
 
@@ -832,58 +941,106 @@ export default function ManagePage() {
         </button>
         {showBlast && (
           <Card className="mt-3">
-            <CardContent className="p-4 space-y-3">
-              <p className="text-sm text-muted-foreground">向所有已通过的报名者发送通知</p>
-              <Input
-                placeholder="通知主题"
-                value={blastSubject}
-                onChange={(e) => setBlastSubject(e.target.value)}
-              />
-              <Textarea
-                placeholder="通知内容..."
-                rows={3}
-                value={blastContent}
-                onChange={(e) => setBlastContent(e.target.value)}
-              />
-              <div className="flex items-center gap-4">
-                <label className="flex items-center gap-2 cursor-pointer text-sm">
-                  <input
-                    type="checkbox"
-                    checked={blastChannels.includes("sms")}
-                    onChange={(e) => {
-                      setBlastChannels(e.target.checked
-                        ? [...blastChannels, "sms"]
-                        : blastChannels.filter((c) => c !== "sms"));
-                    }}
-                    className="h-3.5 w-3.5 rounded border-input"
-                  />
-                  短信
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer text-sm">
-                  <input
-                    type="checkbox"
-                    checked={blastChannels.includes("a2a")}
-                    onChange={(e) => {
-                      setBlastChannels(e.target.checked
-                        ? [...blastChannels, "a2a"]
-                        : blastChannels.filter((c) => c !== "a2a"));
-                    }}
-                    className="h-3.5 w-3.5 rounded border-input"
-                  />
-                  Agent 消息
-                </label>
-              </div>
-              <div className="flex items-center gap-3">
-                <Button
-                  size="sm"
-                  onClick={handleBlast}
-                  disabled={blastLoading || !blastSubject.trim() || !blastContent.trim()}
+            <CardContent className="p-4 space-y-4">
+              {/* SMS blast */}
+              <div className="space-y-2">
+                <p className="text-sm font-medium">短信群发</p>
+                <p className="text-xs text-muted-foreground">审批通过时已自动发送报名成功短信，此处可选择模板群发或补发</p>
+                <select
+                  value={selectedTemplate}
+                  onChange={(e) => {
+                    setSelectedTemplate(e.target.value);
+                    setSmsVars(getEventDefaults());
+                  }}
+                  className="w-full h-8 text-sm border rounded-md px-2 bg-background"
                 >
-                  {blastLoading ? "发送中..." : "发送通知"}
-                </Button>
-                {blastResult && (
-                  <p className="text-xs text-muted-foreground">{blastResult}</p>
+                  {smsTemplates.map((t) => (
+                    <option key={t.type} value={t.type} disabled={!t.configured}>
+                      {t.label}{!t.configured ? "（未配置）" : ""}
+                    </option>
+                  ))}
+                </select>
+                {currentTemplate && (
+                  <>
+                    <div className="grid grid-cols-3 gap-2">
+                      {currentTemplate.variables.map((v) => (
+                        <div key={v}>
+                          <label className="text-xs text-muted-foreground">{VAR_LABELS[v] || v}</label>
+                          <Input
+                            value={smsVars[v] || ""}
+                            onChange={(e) => setSmsVars({ ...smsVars, [v]: e.target.value })}
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="rounded-md bg-muted/50 border px-3 py-2 text-sm text-muted-foreground">
+                      <p className="text-xs font-medium text-foreground mb-1">短信预览</p>
+                      {renderSmsPreview()}
+                    </div>
+                  </>
                 )}
+                <div className="flex items-center gap-2">
+                  <Input
+                    placeholder="测试手机号（最多3个，逗号分隔）"
+                    value={testPhones}
+                    onChange={(e) => setTestPhones(e.target.value)}
+                    className="h-8 text-sm flex-1"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleTestSms}
+                    disabled={testLoading || !testPhones.trim() || !currentTemplate?.configured}
+                    className="h-8 whitespace-nowrap"
+                  >
+                    {testLoading ? "发送中..." : "测试发送"}
+                  </Button>
+                </div>
+                {testResult && (
+                  <p className="text-xs text-muted-foreground">{testResult}</p>
+                )}
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => handleBlast(["sms"])}
+                    disabled={blastLoading || !currentTemplate?.configured}
+                    className="h-8"
+                  >
+                    {blastLoading && blastChannels.includes("sms") && !blastChannels.includes("a2a") ? "发送中..." : "群发给所有已通过报名者"}
+                  </Button>
+                  {blastChannels.includes("sms") && !blastChannels.includes("a2a") && blastResult && (
+                    <span className="text-xs text-muted-foreground">{blastResult}</span>
+                  )}
+                </div>
+              </div>
+
+              <hr />
+
+              {/* Agent message blast */}
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Agent 消息群发</p>
+                <p className="text-xs text-muted-foreground">向所有已通过报名者的 Agent 发送自定义消息</p>
+                <Textarea
+                  placeholder="消息内容..."
+                  rows={3}
+                  value={blastContent}
+                  onChange={(e) => setBlastContent(e.target.value)}
+                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => handleBlast(["a2a"])}
+                    disabled={blastLoading || !blastContent.trim()}
+                    className="h-8"
+                  >
+                    {blastLoading && blastChannels.includes("a2a") ? "发送中..." : "发送 Agent 消息"}
+                  </Button>
+                  {blastChannels.includes("a2a") && !blastChannels.includes("sms") && blastResult && (
+                    <span className="text-xs text-muted-foreground">{blastResult}</span>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -892,18 +1049,18 @@ export default function ManagePage() {
 
       {/* Co-Host Management */}
       {hasPerm("view_cohosts") && <div className="mb-6">
-        <button
-          onClick={() => setShowCohosts(!showCohosts)}
-          className="text-sm font-medium text-primary hover:underline"
-        >
-          {showCohosts ? "收起" : "展开"}联合主办方
-          {cohosts.length > 0 && ` (${cohosts.length})`}
-        </button>
-        {showCohosts && (
-          <Card className="mt-3">
-            <CardContent className="p-4 space-y-3">
-              {isHost && (
-                <>
+        {isHost ? (
+          <>
+            <button
+              onClick={() => setShowCohosts(!showCohosts)}
+              className="text-sm font-medium text-primary hover:underline"
+            >
+              {showCohosts ? "收起" : "展开"}联合主办方
+              {cohosts.length > 0 && ` (${cohosts.length})`}
+            </button>
+            {showCohosts && (
+              <Card className="mt-3">
+                <CardContent className="p-4 space-y-3">
                   <div className="flex gap-2">
                     <Input
                       placeholder="输入联合主办方手机号"
@@ -922,79 +1079,77 @@ export default function ManagePage() {
                     />
                   )}
                   {cohostError && <p className="text-xs text-destructive">{cohostError}</p>}
-                </>
-              )}
-              {cohosts.length === 0 ? (
-                <p className="text-sm text-muted-foreground">暂无联合主办方</p>
-              ) : (
-                <div className="space-y-2">
-                  {cohosts.map((ch) => (
-                    <div key={ch.id} className="rounded-lg bg-muted/50 p-2.5">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          {ch.avatar_url ? (
-                            <img src={ch.avatar_url} alt="" className="h-6 w-6 rounded-full" />
-                          ) : (
-                            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs">
-                              {(ch.nickname || "?")[0]}
-                            </span>
-                          )}
-                          <span className="text-sm font-medium">{ch.nickname}</span>
-                        </div>
-                        {isHost && (
-                          <div className="flex items-center gap-1">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="text-xs"
-                              onClick={() => {
-                                if (editingCohostId === ch.id) {
-                                  setEditingCohostId(null);
-                                } else {
-                                  setEditingCohostId(ch.id);
-                                  setEditingPerms((ch.permissions || []).filter((p: string) => p !== "checkin"));
-                                }
-                              }}
-                            >
-                              {editingCohostId === ch.id ? "取消" : "权限"}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="text-xs text-destructive hover:text-destructive"
-                              onClick={() => handleRemoveCohost(ch.id)}
-                            >
-                              移除
-                            </Button>
+                  {cohosts.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">暂无联合主办方</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {cohosts.map((ch) => (
+                        <div key={ch.id} className="rounded-lg bg-muted/50 p-2.5">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              {ch.avatar_url ? (
+                                <img src={ch.avatar_url} alt="" className="h-6 w-6 rounded-full" />
+                              ) : (
+                                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs">
+                                  {(ch.nickname || "?")[0]}
+                                </span>
+                              )}
+                              <span className="text-sm font-medium">{ch.nickname}</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-xs"
+                                onClick={() => {
+                                  if (editingCohostId === ch.id) {
+                                    setEditingCohostId(null);
+                                  } else {
+                                    setEditingCohostId(ch.id);
+                                    setEditingPerms((ch.permissions || []).filter((p: string) => p !== "checkin"));
+                                  }
+                                }}
+                              >
+                                {editingCohostId === ch.id ? "取消" : "权限"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-xs text-destructive hover:text-destructive"
+                                onClick={() => handleRemoveCohost(ch.id)}
+                              >
+                                移除
+                              </Button>
+                            </div>
                           </div>
-                        )}
-                      </div>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {(ch.permissions || ["checkin"]).map((p: string) => (
-                          <span key={p} className="inline-block rounded bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                            {PERM_LABELS[p] || p}
-                          </span>
-                        ))}
-                      </div>
-                      {isHost && editingCohostId === ch.id && (
-                        <div className="mt-2 border-t pt-2">
-                          <PermissionCheckboxes value={editingPerms} onChange={setEditingPerms} />
-                          <Button
-                            size="sm"
-                            className="mt-2"
-                            onClick={() => handleUpdateCohostPerms(ch.id, editingPerms)}
-                          >
-                            保存权限
-                          </Button>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {(ch.permissions || ["checkin"]).map((p: string) => (
+                              <span key={p} className="inline-block rounded bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                                {PERM_LABELS[p] || p}
+                              </span>
+                            ))}
+                          </div>
+                          {editingCohostId === ch.id && (
+                            <div className="mt-2 border-t pt-2">
+                              <PermissionCheckboxes value={editingPerms} onChange={setEditingPerms} />
+                              <Button
+                                size="sm"
+                                className="mt-2"
+                                onClick={() => handleUpdateCohostPerms(ch.id, editingPerms)}
+                              >
+                                保存权限
+                              </Button>
+                            </div>
+                          )}
                         </div>
-                      )}
+                      ))}
                     </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
+                  )}
+                </CardContent>
+              </Card>
+            )}
+          </>
+        ) : null}
       </div>}
 
       {/* Staff Management */}
@@ -1184,136 +1339,154 @@ export default function ManagePage() {
         </div>
       )}
 
-      {/* Batch actions */}
-      {isHost && pendingCount > 0 && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg bg-muted/50 p-3">
-          <p className="text-sm">{pendingCount} 个报名待审批</p>
-          <Button size="sm" onClick={handleBatchApprove}>全部通过</Button>
-        </div>
-      )}
+      {/* Registration Approval */}
+      {hasPerm("view_registrations") && <div className="mb-6">
+        <button
+          onClick={() => setShowRegs(!showRegs)}
+          className="text-sm font-medium text-primary hover:underline"
+        >
+          {showRegs ? "收起" : "展开"}报名审批
+          {regs.length > 0 && ` (${regs.length})`}
+        </button>
+        {showRegs && (
+          <div className="mt-3">
+            {/* Batch actions */}
+            {isHost && pendingCount > 0 && (
+              <div className="mb-4 flex items-center gap-2 rounded-lg bg-muted/50 p-3">
+                <p className="text-sm">{pendingCount} 个报名待审批</p>
+                <Button size="sm" onClick={handleBatchApprove}>全部通过</Button>
+              </div>
+            )}
 
-      {/* Answer filter indicator */}
-      {answerFilter && (
-        <div className="mb-3 flex items-center gap-2 rounded-lg bg-blue-50 dark:bg-blue-950/30 p-2.5 text-sm">
-          <span>
-            筛选中：<span className="font-medium">{answerFilter.value}</span>
-          </span>
-          <button onClick={clearAnswerFilter} className="text-xs text-primary hover:underline ml-auto">
-            清除筛选
-          </button>
-        </div>
-      )}
+            {/* Answer filter indicator */}
+            {answerFilter && (
+              <div className="mb-3 flex items-center gap-2 rounded-lg bg-blue-50 dark:bg-blue-950/30 p-2.5 text-sm">
+                <span>
+                  筛选中：<span className="font-medium">{answerFilter.value}</span>
+                </span>
+                <button onClick={clearAnswerFilter} className="text-xs text-primary hover:underline ml-auto">
+                  清除筛选
+                </button>
+              </div>
+            )}
 
-      {/* Registrations List */}
-      {hasPerm("view_registrations") && <div>
-        <div className="flex gap-2 mb-4">
-          {["all", "pending", "approved", "declined", "waitlisted"].map((s) => (
-            <button
-              key={s}
-              onClick={() => { setFilter(s); if (answerFilter) clearAnswerFilter(); }}
-              className={`rounded-full px-3 py-1 text-xs transition-colors ${
-                filter === s ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80"
-              }`}
-            >
-              {{ all: "全部", pending: "待审批", approved: "已通过", declined: "已拒绝", waitlisted: "候补" }[s]}
-            </button>
-          ))}
-        </div>
-
-        <div className="space-y-2">
-          {filteredRegs.length === 0 ? (
-            <p className="py-8 text-center text-muted-foreground">暂无报名</p>
-          ) : (
-            filteredRegs.map((reg) => (
-              <Card key={reg.id}>
-                <CardContent className="p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="font-medium text-sm truncate">
-                          {reg.user?.nickname || "未知用户"}
-                        </p>
-                        {reg.agent && (
-                          <Badge variant="outline" className="text-[10px]">
-                            Agent: {reg.agent.name}
-                          </Badge>
-                        )}
-                        <Badge variant={
-                          reg.status === "approved" ? "default" :
-                          reg.status === "pending" ? "secondary" :
-                          "outline"
-                        }>
-                          {{ approved: "已通过", pending: "待审批", declined: "已拒绝", waitlisted: "候补", cancelled: "已取消" }[reg.status] || reg.status}
-                        </Badge>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {reg.user?.phone || "无手机号"} · {new Date(reg.registered_at).toLocaleString("zh-CN")}
-                        {reg.checked_in_at && " · 已签到"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1 ml-2">
-                      {reg.custom_answers && Object.keys(reg.custom_answers).length > 0 && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="text-xs h-7 px-2"
-                          onClick={() => setExpandedReg(expandedReg === reg.id ? null : reg.id)}
-                        >
-                          {expandedReg === reg.id ? "收起" : "问卷"}
-                        </Button>
-                      )}
-                      {isHost && reg.status === "pending" && (
-                        <>
-                          <Button size="sm" onClick={() => handleApprove(reg.id)}>通过</Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => handleWaitlist(reg.id)}
-                          >
-                            候补
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setConfirmDialog({ type: "decline", regId: reg.id })}
-                          >
-                            拒绝
-                          </Button>
-                        </>
-                      )}
-                      {reg.status === "approved" && !reg.checked_in_at && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleScanCheckin(reg.qr_code_token)}
-                          disabled={scanLoading}
-                        >
-                          签到
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-
-                  {expandedReg === reg.id && reg.custom_answers && (
-                    <div className="mt-2 pt-2 border-t space-y-1.5">
-                      {Object.entries(reg.custom_answers).map(([qId, value]) => {
-                        const qStat = answerStats.find((s) => s.question_id === qId);
-                        const label = qStat?.question_text || qId;
-                        const displayValue = Array.isArray(value) ? value.join(", ") : String(value);
-                        return (
-                          <div key={qId} className="text-xs">
-                            <span className="text-muted-foreground">{label}：</span>
-                            <span className="font-medium">{displayValue}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
+            <div className="flex gap-2 mb-4 flex-wrap">
+              {["all", "pending", "approved", "declined", "waitlisted"].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => { setFilter(s); if (answerFilter) clearAnswerFilter(); }}
+                  className={`rounded-full px-3 py-1 text-xs transition-colors ${
+                    filter === s ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80"
+                  }`}
+                >
+                  {{ all: "全部", pending: "待审批", approved: "已通过", declined: "已拒绝", waitlisted: "候补" }[s]}
+                  {statusCounts[s] > 0 && (
+                    <span className={`ml-1 inline-flex items-center justify-center rounded-full px-1.5 min-w-[18px] text-[10px] font-medium ${
+                      filter === s ? "bg-primary-foreground/20 text-primary-foreground" : "bg-background text-muted-foreground"
+                    }`}>
+                      {statusCounts[s]}
+                    </span>
                   )}
-                </CardContent>
-              </Card>
-            ))
-          )}
-        </div>
+                </button>
+              ))}
+            </div>
+
+            <div className="space-y-2">
+              {filteredRegs.length === 0 ? (
+                <p className="py-8 text-center text-muted-foreground">暂无报名</p>
+              ) : (
+                filteredRegs.map((reg) => (
+                  <Card key={reg.id}>
+                    <CardContent className="p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-sm truncate">
+                              {reg.user?.nickname || "未知用户"}
+                            </p>
+                            {reg.agent && (
+                              <Badge variant="outline" className="text-[10px]">
+                                Agent: {reg.agent.name}
+                              </Badge>
+                            )}
+                            <Badge variant={
+                              reg.status === "approved" ? "default" :
+                              reg.status === "pending" ? "secondary" :
+                              "outline"
+                            }>
+                              {{ approved: "已通过", pending: "待审批", declined: "已拒绝", waitlisted: "候补", cancelled: "已取消" }[reg.status] || reg.status}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            {reg.user?.phone || "无手机号"} · {new Date(reg.registered_at).toLocaleString("zh-CN")}
+                            {reg.checked_in_at && " · 已签到"}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1 ml-2">
+                          {reg.custom_answers && Object.keys(reg.custom_answers).length > 0 && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-xs h-7 px-2"
+                              onClick={() => setExpandedReg(expandedReg === reg.id ? null : reg.id)}
+                            >
+                              {expandedReg === reg.id ? "收起" : "问卷"}
+                            </Button>
+                          )}
+                          {isHost && reg.status === "pending" && (
+                            <>
+                              <Button size="sm" onClick={() => handleApprove(reg.id)}>通过</Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => handleWaitlist(reg.id)}
+                              >
+                                候补
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setConfirmDialog({ type: "decline", regId: reg.id })}
+                              >
+                                拒绝
+                              </Button>
+                            </>
+                          )}
+                          {reg.status === "approved" && !reg.checked_in_at && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleScanCheckin(reg.qr_code_token)}
+                              disabled={scanLoading}
+                            >
+                              签到
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      {expandedReg === reg.id && reg.custom_answers && (
+                        <div className="mt-2 pt-2 border-t space-y-1.5">
+                          {Object.entries(reg.custom_answers).map(([qId, value]) => {
+                            const qStat = answerStats.find((s) => s.question_id === qId);
+                            const label = qStat?.question_text || qId;
+                            const displayValue = Array.isArray(value) ? value.join(", ") : String(value);
+                            return (
+                              <div key={qId} className="text-xs">
+                                <span className="text-muted-foreground">{label}：</span>
+                                <span className="font-medium">{displayValue}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>}
 
       {/* Confirm Dialog */}
