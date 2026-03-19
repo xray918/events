@@ -17,7 +17,7 @@ from app.core.deps import get_current_user
 from app.core.security import utc_now
 from app.db import get_db
 from app.models.clawdchat import Agent, User
-from app.models.event import Event, EventCoHost, EventRegistration, EventStaff, EventWinner
+from app.models.event import Event, EventCoHost, EventCustomQuestion, EventRegistration, EventStaff, EventWinner
 from app.services.notify import notify_registration_approved
 
 router = APIRouter()
@@ -370,21 +370,32 @@ async def export_registrations_csv(
     """Export registrations as CSV."""
     event = await _require_host(user, event_id, db, cohost_permission="export_csv")
 
-    q = (
+    questions_result = await db.execute(
+        select(EventCustomQuestion)
+        .where(EventCustomQuestion.event_id == event_id)
+        .order_by(EventCustomQuestion.sort_order.asc())
+    )
+    questions = questions_result.scalars().all()
+    q_id_list = [str(q.id) for q in questions]
+
+    reg_query = (
         select(EventRegistration)
         .options(selectinload(EventRegistration.user), selectinload(EventRegistration.agent))
         .where(EventRegistration.event_id == event_id)
         .order_by(EventRegistration.registered_at.asc())
     )
-    result = await db.execute(q)
+    result = await db.execute(reg_query)
     regs = result.unique().scalars().all()
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["姓名", "手机号", "邮箱", "Agent", "状态", "报名方式", "报名时间", "签到时间"])
+
+    header = ["姓名", "手机号", "邮箱", "Agent", "状态", "报名方式", "报名时间", "签到时间"]
+    header.extend(cq.question_text for cq in questions)
+    writer.writerow(header)
 
     for r in regs:
-        writer.writerow([
+        row = [
             r.user.nickname if r.user else "",
             r.phone or "",
             r.user.email if r.user else "",
@@ -393,7 +404,14 @@ async def export_registrations_csv(
             r.registered_via,
             r.registered_at.isoformat() if r.registered_at else "",
             r.checked_in_at.isoformat() if r.checked_in_at else "",
-        ])
+        ]
+        answers = r.custom_answers or {}
+        for qid in q_id_list:
+            val = answers.get(qid, "")
+            if isinstance(val, list):
+                val = ", ".join(str(v) for v in val)
+            row.append(str(val) if val else "")
+        writer.writerow(row)
 
     output.seek(0)
     return StreamingResponse(
