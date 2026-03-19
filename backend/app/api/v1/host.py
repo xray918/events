@@ -413,10 +413,11 @@ async def export_registrations_csv(
             row.append(str(val) if val else "")
         writer.writerow(row)
 
-    output.seek(0)
+    csv_content = output.getvalue()
+    encoded = ("\ufeff" + csv_content).encode("utf-8")
     return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
+        iter([encoded]),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename=registrations-{event.id}.csv"},
     )
 
