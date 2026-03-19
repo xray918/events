@@ -36,9 +36,9 @@ async def notify_registration_approved(
             phone=reg.phone,
             template_code=settings.sms_blast_template_code,
             template_params={
-                "event": (event.title or "")[:20],
-                "time": _format_event_time(event)[:20],
-                "location": (event.location_name or event.location_address or "线上")[:20],
+                "event": event.title or "",
+                "time": _format_event_time(event),
+                "location": event.location_name or event.location_address or "线上",
             },
         )
 

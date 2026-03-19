@@ -233,7 +233,7 @@ def _resolve_sms_params(
     params = {}
     for var in variables:
         val = (overrides or {}).get(var) or defaults.get(var, "")
-        params[var] = val[:20]
+        params[var] = val
     return template_code or "", params
 
 

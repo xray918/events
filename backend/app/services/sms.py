@@ -2,9 +2,28 @@
 
 import json
 import logging
+import re
 from typing import Optional
 
 from app.core.config import settings
+
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F680-\U0001F6FF"  # transport & map
+    "\U0001F1E0-\U0001F1FF"  # flags
+    "\U00002702-\U000027B0"
+    "\U000024C2-\U0001F251"
+    "\U0001f926-\U0001f937"
+    "\U00010000-\U0010ffff"
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def _strip_emoji(text: str) -> str:
+    return _EMOJI_RE.sub("", text).strip()
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +70,15 @@ async def send_sms(
     try:
         from alibabacloud_dysmsapi20170525 import models as sms_models
 
+        clean_params = None
+        if template_params:
+            clean_params = {k: _strip_emoji(str(v)) for k, v in template_params.items()}
+
         request = sms_models.SendSmsRequest(
             phone_numbers=phone,
             sign_name=settings.sms_sign_name,
             template_code=template_code,
-            template_param=json.dumps(template_params) if template_params else None,
+            template_param=json.dumps(clean_params) if clean_params else None,
         )
         response = client.send_sms(request)
         body = response.body
