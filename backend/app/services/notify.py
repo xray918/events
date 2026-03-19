@@ -73,17 +73,28 @@ async def send_blast_to_registration(
     content: str,
     channels: list[str],
     db: AsyncSession,
+    *,
+    event_time: str = "",
+    event_location: str = "",
 ) -> dict:
     """Send a blast message to a single registration."""
     results = {}
 
     if "sms" in channels and reg.phone:
-        sms_result = await send_sms(
-            phone=reg.phone,
-            template_code=settings.sms_template_code,
-            template_params={"event": subject[:20], "content": content[:50]},
-        )
-        results["sms"] = sms_result
+        template_code = settings.sms_blast_template_code
+        if not template_code:
+            results["sms"] = {"success": False, "error": "Blast SMS template not configured"}
+        else:
+            sms_result = await send_sms(
+                phone=reg.phone,
+                template_code=template_code,
+                template_params={
+                    "event": subject[:20],
+                    "time": event_time[:20],
+                    "location": event_location[:20],
+                },
+            )
+            results["sms"] = sms_result
 
     if "a2a" in channels and reg.user_id:
         a2a_result = await _notify_user_agents_via_a2a(

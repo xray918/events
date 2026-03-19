@@ -152,7 +152,8 @@ class EventCoHost(Base):
     __tablename__ = "event_cohosts"
 
     VALID_PERMISSIONS = {
-        "checkin", "view_registrations", "export_csv", "view_stats",
+        "checkin", "view_registrations", "approve_registrations",
+        "export_csv", "view_stats",
         "view_cohosts", "view_staff", "view_winners", "view_checkin_key",
     }
 

@@ -19,6 +19,16 @@ from app.services.notify import send_blast_to_registration
 router = APIRouter()
 
 
+def _format_event_time(event: Event) -> str:
+    """Format event start_time for SMS template (e.g. '3月20日 14:00')."""
+    if not event.start_time:
+        return "待定"
+    import zoneinfo
+    tz = zoneinfo.ZoneInfo(event.timezone or "Asia/Shanghai")
+    local = event.start_time.astimezone(tz)
+    return f"{local.month}月{local.day}日 {local.strftime('%H:%M')}"
+
+
 class BlastRequest(BaseModel):
     subject: str
     content: str
@@ -64,10 +74,16 @@ async def send_blast(
     )
     regs = regs_q.unique().scalars().all()
 
+    event_time = _format_event_time(event)
+    event_location = event.location_name or event.location_address or "线上"
+
     sent_count = 0
     failed_count = 0
     for reg in regs:
-        results = await send_blast_to_registration(reg, body.subject, body.content, body.channels, db)
+        results = await send_blast_to_registration(
+            reg, body.subject, body.content, body.channels, db,
+            event_time=event_time, event_location=event_location,
+        )
         log_status = "sent" if any(r.get("success") for r in results.values()) else "failed"
 
         for channel, r in results.items():
@@ -110,6 +126,9 @@ async def staff_send_notification(
     if not staff.scalar_one_or_none():
         raise HTTPException(status_code=403, detail="你不是此活动的 Staff Agent")
 
+    ev_result = await db.execute(select(Event).where(Event.id == event_id))
+    event = ev_result.scalar_one()
+
     blast = EventBlast(
         event_id=event_id,
         subject=body.subject,
@@ -128,9 +147,15 @@ async def staff_send_notification(
     regs_q = await db.execute(select(EventRegistration).where(*where))
     regs = regs_q.scalars().all()
 
+    event_time = _format_event_time(event)
+    event_location = event.location_name or event.location_address or "线上"
+
     sent = 0
     for reg in regs:
-        results = await send_blast_to_registration(reg, body.subject, body.content, body.channels, db)
+        results = await send_blast_to_registration(
+            reg, body.subject, body.content, body.channels, db,
+            event_time=event_time, event_location=event_location,
+        )
         if any(r.get("success") for r in results.values()):
             sent += 1
 

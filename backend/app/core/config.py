@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     alibaba_cloud_access_key_secret: str = ""
     sms_sign_name: str = "虾聊"
     sms_template_code: str = ""
+    sms_blast_template_code: str = ""
     sms_winner_template_code: str = ""
 
     # Image upload (Aliyun OSS)

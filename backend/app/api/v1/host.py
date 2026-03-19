@@ -150,7 +150,7 @@ async def approve_registration(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    event = await _require_host(user, event_id, db)
+    event = await _require_host(user, event_id, db, cohost_permission="approve_registrations")
     result = await db.execute(
         select(EventRegistration).where(
             EventRegistration.id == reg_id,
@@ -181,7 +181,7 @@ async def decline_registration(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_host(user, event_id, db)
+    await _require_host(user, event_id, db, cohost_permission="approve_registrations")
     result = await db.execute(
         select(EventRegistration).where(
             EventRegistration.id == reg_id,
@@ -204,7 +204,7 @@ async def waitlist_registration(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_host(user, event_id, db)
+    await _require_host(user, event_id, db, cohost_permission="approve_registrations")
     result = await db.execute(
         select(EventRegistration).where(
             EventRegistration.id == reg_id,
@@ -227,7 +227,7 @@ async def batch_approve(
     db: AsyncSession = Depends(get_db),
 ):
     """Approve all pending registrations."""
-    event = await _require_host(user, event_id, db)
+    event = await _require_host(user, event_id, db, cohost_permission="approve_registrations")
 
     pending_q = await db.execute(
         select(EventRegistration).where(
