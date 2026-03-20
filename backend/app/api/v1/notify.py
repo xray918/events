@@ -121,9 +121,26 @@ async def send_blast(
 
     sent_count = 0
     failed_count = 0
+    skipped_count = 0
+    seen_phones: set[str] = set()
+
     for reg in regs:
+        skip_sms = False
+        if "sms" in body.channels and reg.phone:
+            from app.services.notify import _clean_phone
+            phone = _clean_phone(reg.phone)
+            if phone in seen_phones:
+                skip_sms = True
+                skipped_count += 1
+            elif phone:
+                seen_phones.add(phone)
+
+        channels = [c for c in body.channels if not (c == "sms" and skip_sms)]
+        if not channels:
+            continue
+
         results = await send_blast_to_registration(
-            reg, body.subject or event.title, body.content, body.channels, db,
+            reg, body.subject or event.title, body.content, channels, db,
             sms_template_code=template_code, sms_params=sms_params,
         )
         log_status = "sent" if any(r.get("success") for r in results.values()) else "failed"
@@ -150,6 +167,7 @@ async def send_blast(
             "total_recipients": len(regs),
             "sent": sent_count,
             "failed": failed_count,
+            "skipped_duplicates": skipped_count,
         },
     }
 

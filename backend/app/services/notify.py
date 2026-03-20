@@ -80,6 +80,17 @@ async def notify_winner(
     return results
 
 
+import re
+
+_PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
+
+
+def _clean_phone(phone: str) -> str:
+    """Strip non-digits and validate Chinese mobile number format."""
+    digits = re.sub(r"\D", "", phone.strip())
+    return digits if _PHONE_RE.match(digits) else ""
+
+
 async def send_blast_to_registration(
     reg: EventRegistration,
     subject: str,
@@ -94,11 +105,14 @@ async def send_blast_to_registration(
     results = {}
 
     if "sms" in channels and reg.phone:
-        if not sms_template_code:
+        phone = _clean_phone(reg.phone)
+        if not phone:
+            results["sms"] = {"success": False, "error": "Invalid phone number"}
+        elif not sms_template_code:
             results["sms"] = {"success": False, "error": "SMS template not configured"}
         else:
             sms_result = await send_sms(
-                phone=reg.phone,
+                phone=phone,
                 template_code=sms_template_code,
                 template_params=sms_params or {},
             )
